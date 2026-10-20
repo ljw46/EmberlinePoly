@@ -1,0 +1,32 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+.cache/
+
+# JUCE / plugin artefacts
+*.vst3
+*.component
+*.exe
+*.o
+*.obj
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code (local settings, memory, worktrees)
+.claude/
+CLAUDE.local.md

@@ -1,0 +1,39 @@
+EMBERLINE POLY - Mac install
+============================
+
+This folder contains three things:
+
+  Emberline Poly.vst3         the plugin as VST3 (Reaper, Ableton, Bitwig...)
+  Emberline Poly.component    the plugin as Audio Unit (Logic, GarageBand, Ableton...)
+  Emberline Poly.app          the Standalone app: runs the sequencer on its own clock (no sound; it makes MIDI)
+
+PLUGIN
+  1. Copy "Emberline Poly.vst3" into:
+         /Library/Audio/Plug-Ins/VST3
+     and/or "Emberline Poly.component" into:
+         /Library/Audio/Plug-Ins/Components
+     (or the same folders under ~/Library for just your user).
+  2. Open your DAW and rescan plugins. It appears as "Emberline Poly", an instrument.
+
+USING IT
+  Emberline Poly makes MIDI, not sound. Put it on an instrument track, then send its MIDI to a synth:
+    - Logic:    use a Software Instrument track with Emberline Poly, and route its MIDI to another
+                instrument track (MIDI-controlled effects / "Instrument MIDI Out" depends on your Logic version).
+    - Ableton:  put it on a MIDI track and set another MIDI track's "MIDI From" to this track and "Emberline Poly".
+    - Reaper:   add a synth after it on the same track (FX chain), or route the track's MIDI to another track.
+  Press play: the four engines follow the host's transport and tempo. Each part sends on its own MIDI channel:
+  chords on 1, engines 1 to 4 on 2 to 5 (change them in the plugin). Set each instrument to listen to its channel.
+  To take a pattern with you, let it play a few bars, then drag CHORDS, an ENGINE or ALL TRACKS onto a MIDI track
+  (or click the handle to save a .mid file).
+
+"Can't be opened because the developer cannot be verified"?
+  The beta isn't signed or notarised yet, so macOS blocks it the first time. Either:
+    - Right-click (or Control-click) the file and choose Open, then click Open again, or
+    - open Terminal and run this on the files you installed (change the paths if needed):
+        xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Emberline Poly.vst3"
+        xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/Emberline Poly.component"
+        xattr -dr com.apple.quarantine "/Applications/Emberline Poly.app"
+
+Works on Apple Silicon and Intel Macs (macOS 11 or later).
+
+Licence: see LICENSE (code) and LICENSE-CONTENT.md (artwork).

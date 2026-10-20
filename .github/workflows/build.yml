@@ -1,0 +1,133 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast gate: builds the engine tests on Linux and runs them (timing grid, polymeter / polyrhythm, scales, humanization, MIDI export).
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the CMake version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          core="${tag%%-*}"                       # v0.1.0-beta.1 -> 0.1.0
+          cmake_version=$(sed -n 's/^project([A-Za-z]* VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "tag $GITHUB_REF_NAME -> $core, CMakeLists.txt -> $cmake_version"
+          if [ "$core" != "$cmake_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match project VERSION $cmake_version in CMakeLists.txt. Bump it first."
+            exit 1
+          fi
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+      - name: Build EmberlinePolyTests
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target EmberlinePolyTests
+      - name: Engine tests
+        run: build/EmberlinePolyTests_artefacts/Release/EmberlinePolyTests
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target EmberlinePoly_Standalone EmberlinePoly_VST3
+      # Plugin validator (host-style load, parameter, state and audio tests); a failure fails the build.
+      - name: pluginval
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_Windows.zip -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          ./pluginval/pluginval.exe --strictness-level 5 --skip-gui-tests --validate-in-process "build/EmberlinePoly_artefacts/Release/VST3/Emberline Poly.vst3"
+      - name: Package
+        shell: pwsh
+        run: |
+          $a = "build/EmberlinePoly_artefacts/Release"
+          $stage = "stage/Emberline Poly"
+          New-Item -ItemType Directory -Force $stage, dist | Out-Null
+          Copy-Item -Recurse "$a/VST3/Emberline Poly.vst3" $stage
+          Copy-Item "$a/Standalone/Emberline Poly.exe" $stage
+          Copy-Item docs/install-windows.txt "$stage/INSTALL.txt"
+          Copy-Item LICENSE, LICENSE-CONTENT.md $stage
+          Compress-Archive -Path $stage -DestinationPath dist/EmberlinePoly-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+          retention-days: 14
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal (arm64 + x86_64)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build --target EmberlinePoly_Standalone EmberlinePoly_VST3 EmberlinePoly_AU
+      - name: pluginval (VST3)
+        run: |
+          curl -fsSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_macOS.zip
+          unzip -q pluginval.zip -d pluginval
+          pluginval/pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate-in-process "build/EmberlinePoly_artefacts/Release/VST3/Emberline Poly.vst3"
+      # The Audio Unit is checked too, but an unsigned AU that is not installed can fail registration on a CI runner,
+      # so this one reports without failing the build.
+      - name: pluginval (AU)
+        continue-on-error: true
+        run: pluginval/pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate-in-process "build/EmberlinePoly_artefacts/Release/AU/Emberline Poly.component"
+      - name: Package
+        run: |
+          a=build/EmberlinePoly_artefacts/Release
+          stage="stage/Emberline Poly"
+          mkdir -p "$stage" dist
+          cp -R "$a/VST3/Emberline Poly.vst3" "$stage/"
+          cp -R "$a/AU/Emberline Poly.component" "$stage/"
+          cp -R "$a/Standalone/Emberline Poly.app" "$stage/"
+          cp docs/install-macos.txt "$stage/INSTALL.txt"
+          cp LICENSE LICENSE-CONTENT.md "$stage/"
+          ditto -c -k --keepParent "$stage" dist/EmberlinePoly-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+          retention-days: 14
+
+  # Pushing a tag like v0.1.0-beta.1 publishes the builds as a GitHub release.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4   # first: checkout cleans the workspace, so it must come before the download
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # download instructions + this version's section of the changelog
+          cp .github/release-notes.md notes.md
+          printf '## What is in this version\n\n' >> notes.md
+          awk '/^## /{n++} n==1 && !/^## /' CHANGELOG.md >> notes.md
+          gh release create "${{ github.ref_name }}" dist/*.zip --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" --notes-file notes.md --prerelease

@@ -1,0 +1,28 @@
+EMBERLINE POLY - Windows install
+================================
+
+This folder contains two things:
+
+  Emberline Poly.vst3   the plugin, for your DAW (Reaper, Ableton, FL Studio...)
+  Emberline Poly.exe    the Standalone app: runs the sequencer on its own clock (no sound; it makes MIDI)
+
+PLUGIN (VST3)
+  1. Copy the whole "Emberline Poly.vst3" item into:
+         C:\Program Files\Common Files\VST3
+     (Windows may ask for permission - click Continue.)
+  2. Open your DAW and rescan plugins. It appears as "Emberline Poly", an instrument.
+
+USING IT
+  Emberline Poly makes MIDI, not sound. Put it on an instrument track, then send its MIDI to a synth:
+    - Reaper:   add a synth after it on the same track (FX chain), or route the track's MIDI to another track.
+    - Ableton:  put it on a MIDI track and set another MIDI track's "MIDI From" to this track and "Emberline Poly".
+    - FL Studio: set the plugin's MIDI output port, then give your synth the same input port.
+  Press play: the four engines follow the host's transport and tempo. Each part sends on its own MIDI channel:
+  chords on 1, engines 1 to 4 on 2 to 5 (change them in the plugin). Set each instrument to listen to its channel.
+  To take a pattern with you, let it play a few bars, then drag CHORDS, an ENGINE or ALL TRACKS onto a MIDI track
+  (or click the handle to save a .mid file).
+
+"Windows protected your PC" warning?
+  The beta isn't code-signed yet, so Windows is cautious. Click "More info", then "Run anyway".
+
+Licence: see LICENSE (code) and LICENSE-CONTENT.md (artwork).
