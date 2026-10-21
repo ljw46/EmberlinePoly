@@ -1,4 +1,5 @@
 #include "MidiClip.h"
+#include "SequencerEngine.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -48,7 +49,11 @@ namespace ember::clip
 
     int build (const std::vector<seq::CapturedNote>& notes, unsigned sourceMask, int maxBars, double bpm, juce::MidiFile& result)
     {
-        const auto window = chooseWindow (notes, maxBars);
+        return buildWindow (notes, sourceMask, chooseWindow (notes, maxBars), bpm, result);
+    }
+
+    int buildWindow (const std::vector<seq::CapturedNote>& notes, unsigned sourceMask, const Window& window, double bpm, juce::MidiFile& result)
+    {
 
         juce::MidiMessageSequence tempoTrack;
         tempoTrack.addEvent (juce::MidiMessage::textMetaEvent (3, "Emberline Poly"), 0.0);
@@ -99,10 +104,47 @@ namespace ember::clip
         return written;
     }
 
+    std::vector<seq::CapturedNote> render (const seq::Settings& settings, int bars, std::uint64_t seed)
+    {
+        auto s = settings;
+        s.chords.source = seq::chordInternal;
+        s.chords.out = true;
+        for (auto& e : s.engine)
+            e.mute = e.solo = false;
+
+        constexpr double rate = 44100.0, bpm = 120.0;
+        constexpr int block = 512;
+        auto ring = std::make_unique<seq::CaptureRing>();
+        seq::Engine engine;
+        engine.prepare (rate);
+        engine.seed (seed);
+
+        const double beats = (double) std::max (1, bars) * 4.0;
+        const double perSample = bpm / 60.0 / rate;
+        const long long total = (long long) std::ceil (beats / perSample);
+        juce::MidiBuffer in, out;
+        for (long long pos = 0; pos < total; pos += block)
+        {
+            out.clear();
+            engine.process (s, seq::Transport { true, true, (double) pos * perSample, bpm }, in, out, block, ring.get());
+        }
+
+        auto notes = ring->snapshot();
+        for (auto& n : notes)   // whole ticks, so a chord scheduled a sample early still starts exactly on its bar line
+            n.startBeats = std::max (0.0, std::round (n.startBeats * ticksPerQuarter) / ticksPerQuarter);
+        notes.erase (std::remove_if (notes.begin(), notes.end(), [beats] (const seq::CapturedNote& n) { return n.startBeats >= beats; }), notes.end());   // scheduled ahead of the end
+        return notes;
+    }
+
     int write (const std::vector<seq::CapturedNote>& notes, unsigned sourceMask, int maxBars, double bpm, const juce::File& file)
     {
+        return writeWindow (notes, sourceMask, chooseWindow (notes, maxBars), bpm, file);
+    }
+
+    int writeWindow (const std::vector<seq::CapturedNote>& notes, unsigned sourceMask, const Window& window, double bpm, const juce::File& file)
+    {
         juce::MidiFile midi;
-        const int count = build (notes, sourceMask, maxBars, bpm, midi);
+        const int count = buildWindow (notes, sourceMask, window, bpm, midi);
         if (count == 0)
             return 0;
 

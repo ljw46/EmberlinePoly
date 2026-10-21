@@ -101,6 +101,7 @@ namespace ember::ui
         void paint (juce::Graphics& g) override { drawCaption (g, getLocalBounds().removeFromTop (12), caption); }
         void resized() override { button.setBounds (getLocalBounds().withTrimmedTop (13).withHeight (26)); }
         void setTooltip (const juce::String& text) { button.setTooltip (text); }
+        void setCaption (const juce::String& text) { if (text != caption) { caption = text; repaint(); } }
 
         juce::TextButton button;
 
@@ -130,6 +131,7 @@ namespace ember::ui
         void paint (juce::Graphics& g) override { drawCaption (g, getLocalBounds().removeFromTop (12), caption); }
         void resized() override { slider.setBounds (getLocalBounds().withTrimmedTop (13).withHeight (26)); }
         void setTooltip (const juce::String& text) { slider.setTooltip (text); }
+        void setCaption (const juce::String& text) { if (text != caption) { caption = text; repaint(); } }
 
         juce::Slider slider;
 
@@ -335,6 +337,7 @@ namespace ember::ui
         std::function<juce::File()> prepareFile;   // builds the .mid and returns it (or a non-existent File)
         std::function<void()> onPlainClick;        // click without a drag: "save as"
         std::function<void()> onNothingToDrag;
+        std::function<void (const juce::File&)> onDragStarted;
 
         void mouseDown (const juce::MouseEvent& e) override
         {
@@ -351,7 +354,11 @@ namespace ember::ui
             dragged = true;
             const auto file = prepareFile();
             if (file.existsAsFile())
-                juce::DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, this);
+                {
+                    if (onDragStarted)
+                        onDragStarted (file);
+                    juce::DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, this);
+                }
             else if (onNothingToDrag)
                 onNothingToDrag();
         }

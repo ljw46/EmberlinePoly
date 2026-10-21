@@ -35,9 +35,12 @@ The code splits into a GUI-free core and the plugin shell. `EmberlinePolyCore` (
 - `Chords.h`: voicing (`voice` stacks scale tones, so chords are always in the scale), chord timing helpers, and `suggest()`, the genre-aware progression generator
   (templates + weighted colours per genre; it also picks the scale). Pure and seeded, so it is testable.
 - `Rates.h` (rate table + `n:d` ratio = speed multiplier), `Scales.h` (degree to semitone, nearest-tone snap), `Humanize.h` (xorshift RNG, bounded Gaussian jitter, gate slip).
+- `Randomise.h` (per-role dice for one engine's pattern, pure and seeded), `Preset.h` (preset struct + JSON read/write; choices are stored by name so reordering a list does not break files, values are clamped on read)
+  and `FactoryPresets.h` (the library, defined in C++ and exported to JSON by `EmberlinePolyTool presets dir`). Preset apply/capture against the APVTS is `params::applyPreset` / `capturePreset` in `Parameters.cpp`.
 - `Capture.h` + `MidiClip.*`: the engine pushes every generated note (tagged with a source: 0 chords, 1-4 engines) into a lock-free ring (`CaptureRing`, overwrite-oldest).
   `clip::chooseWindow` picks the last N bars on a bar line from *all* sources (so separately dragged clips line up); `clip::build/write` takes a source mask and makes a
-  type-1 file with a named track per source; `clip::importFile` reads a dropped `.mid` into one engine.
+  type-1 file with a named track per source; `clip::importFile` reads a dropped `.mid` into one engine. With the internal chord source the editor does not export from the ring: `clip::render` plays N bars through a private `Engine` from bar 0 and `writeWindow` writes it
+  (full length, no playback needed); the ring is only used for Live MIDI exports.
 
 The plugin shell:
 

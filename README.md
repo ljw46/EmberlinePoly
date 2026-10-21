@@ -96,6 +96,19 @@ Triad, 7th, 9th, Sus2, Sus4 or 7sus4. Chords can last 1/2, 1, 2 or 4 bars, and t
 * **Jitter**: Gaussian micro-timing drift, 0 to 25 ms early or late. Outliers are clamped, so the groove never leaves the grid. The notes of a chord move together.
 * **Gate slip**: random variation of each note's length.
 
+### Presets and dice
+
+**PRESETS** (next to the export handles) opens the preset menu: the factory library grouped by genre (most use one or two engines, the rest are muted),
+**My presets**, **Save preset...**, **Load from file...**, **Show presets folder** and **Roll all engines**.
+
+A preset is a JSON file (see `Source/Preset.h` for the format). It stores the engines' patterns, octave and note pick, the scale and borrow settings,
+the humanize amounts and the **chord source**. The chord progression is optional: choose *With / Without the chord progression* when saving, and untick
+*Presets also set the chord progression* in the menu to keep your own chords when loading. MIDI channels, mute/solo, tempo and drag length are never stored, so your routing
+survives a preset change. Engines a preset does not use are muted. User presets live in `Emberline/Poly/Presets` under your application data folder.
+
+**DICE** on each engine rolls a new pattern (step count, rate, ratio and the five step lanes). The roll is shaped per role (bass, lead, pad, accent): the first step always
+sounds, rests and probability dips are limited, the bass never ratchets past two, and step counts avoid the other engines' lengths. Octave, note pick and MIDI channel stay as they are.
+
 ### MIDI routing
 
 Each part sends on its own channel (1 to 16), so one instance can drive several instruments. Defaults: base chords on channel 1, engines 1 to 4
@@ -103,15 +116,19 @@ on channels 2 to 5. In a DAW, route the plugin's MIDI output to the instruments 
 
 ### Drag-to-DAW
 
-The plugin records what it generates while the transport plays. Drag a handle onto a DAW track to drop the last 1 to 32 bars (your choice under
-**Drag Length**) as a `.mid` clip, including the humanized timing:
+With the **Internal** chord source, a handle exports a clip that is rendered offline from bar 0, for as many bars as **Drag Length** says (1 to 32). It starts on the
+first chord of the progression, is always the full length, and does not need the transport to have played. Each render rolls probability and humanize fresh, so
+the clip is one take of the pattern, not a recording of what you heard.
 
 * **CHORDS**: the chord progression as a polyphonic clip.
-* **ENGINE 1 to 4**: one engine's motif.
-* **ALL TRACKS**: a single type-1 MIDI file with a named track per part, each on its own channel.
+* **ENGINE 1 to 4**: one engine's motif (exported even if the engine is muted).
+* **ALL TRACKS**: a single type-1 MIDI file with a named track per unmuted part (respecting solo), each on its own channel.
 
-All handles use the same bar window, so the clips line up when you drop them. A plain click saves a handle's clip to a file instead.
-Starting the transport again clears the capture.
+All handles share the same bar window, so the clips line up when you drop them. A plain click saves a handle's clip to a file instead, which is the way to go when a host
+does not accept the drag (FL Studio's Patcher, for one).
+
+With the **Live MIDI** chord source the engines depend on the notes you play, so the export is instead what the plugin generated while the transport was running
+(the last 1 to 32 bars, starting on a bar line; starting the transport again clears it). The CHORDS handle is disabled in this mode.
 
 Going the other way, drop a `.mid` file on an engine to load its first 32 notes into that engine's pitch, velocity and gate steps.
 
@@ -139,7 +156,7 @@ it to your VST3 folder (Windows: `C:\Program Files\Common Files\VST3`).
 The tests cover the scale and rate maths, the chord generator, the note-pick modes, multi-engine polymeter and polyrhythm, channel routing, humanization, and multi-track MIDI export. They need no
 display or audio device.
 
-`EmberlinePolyTool` (`snapshot out.png`, `render out.mid`) renders the editor to an image and bounces a few bars of generated multi-track MIDI.
+`EmberlinePolyTool` (`snapshot out.png`, `render out.mid`, `presets dir`) renders the editor to an image and bounces a few bars of generated multi-track MIDI; `presets dir` writes the factory presets out as JSON.
 
 ## Licence
 

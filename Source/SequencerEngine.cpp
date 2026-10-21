@@ -270,6 +270,7 @@ namespace ember::seq
         const double ppq = hostClock ? t.ppq : internalPpq;
         const double bps = bpm / 60.0 / sampleRate;   // beats per sample
         bpmSeen.store (bpm, std::memory_order_relaxed);
+        hostSeen.store (hostClock, std::memory_order_relaxed);
 
         if (! playing)
         {

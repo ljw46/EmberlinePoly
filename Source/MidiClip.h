@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Capture.h"
+#include "SequencerEngine.h"
 #include "Settings.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -28,6 +29,16 @@ namespace ember::clip
     // MIDI channel they were generated on and are shifted so the window starts at beat 0. Returns the number of notes
     // written, or 0 if there was nothing to export.
     int build (const std::vector<seq::CapturedNote>&, unsigned sourceMask, int maxBars, double bpm, juce::MidiFile& result);
+
+    // The same file for an explicit window, used by rendered exports.
+    int buildWindow (const std::vector<seq::CapturedNote>&, unsigned sourceMask, const Window&, double bpm, juce::MidiFile& result);
+    int writeWindow (const std::vector<seq::CapturedNote>&, unsigned sourceMask, const Window&, double bpm, const juce::File&);
+
+    // Plays `bars` bars of the internal progression and all four engines offline, from bar 0, through a private engine. The
+    // exported clip therefore has the full length and starts on the first chord whether or not the transport ever ran. Chord
+    // output is forced on, and mute / solo are ignored so every part is available; the caller picks parts with the source mask.
+    // Only meaningful for the internal chord source (live chords depend on the notes being played).
+    std::vector<seq::CapturedNote> render (const seq::Settings&, int bars, std::uint64_t seed);
 
     // Writes `build()`'s result to a file, replacing it. Returns the number of notes, or 0 on failure.
     int write (const std::vector<seq::CapturedNote>&, unsigned sourceMask, int maxBars, double bpm, const juce::File&);

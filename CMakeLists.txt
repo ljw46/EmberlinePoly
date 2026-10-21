@@ -56,6 +56,9 @@ add_library(EmberlinePolyCore STATIC
     Source/MidiClip.h
     Source/Capture.h
     Source/Chords.h
+    Source/FactoryPresets.h
+    Source/Preset.h
+    Source/Randomise.h
     Source/Humanize.h
     Source/Rates.h
     Source/Scales.h

@@ -182,3 +182,79 @@ namespace ember::params
         s.run = f (run) >= 0.5f;   s.internalBpm = (double) f (bpm);
     }
 }
+
+namespace ember::params
+{
+    void setPlain (juce::AudioProcessorValueTreeState& apvts, const juce::String& id, float plainValue)
+    {
+        if (auto* p = apvts.getParameter (id))
+        {
+            const float target = p->convertTo0to1 (plainValue);
+            if (std::abs (p->getValue() - target) < 1.0e-6f)
+                return;
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (target);
+            p->endChangeGesture();
+        }
+    }
+
+    presets::Preset capturePreset (juce::AudioProcessorValueTreeState& apvts, bool includeChords)
+    {
+        presets::Preset p;
+        Reader (apvts).read (p.settings);
+        for (size_t e = 0; e < (size_t) seq::numEngines; ++e)
+            p.used[e] = ! p.settings.engine[e].mute;
+        p.hasChords = includeChords;
+        return p;
+    }
+
+    void applyPattern (juce::AudioProcessorValueTreeState& apvts, int e, const seq::EngineSettings& en)
+    {
+        setPlain (apvts, engineId (e, "steps"), (float) en.steps);
+        setPlain (apvts, engineId (e, "rate"), (float) en.rate);
+        setPlain (apvts, engineId (e, "num"), (float) en.num - 1.0f);
+        setPlain (apvts, engineId (e, "den"), (float) en.den - 1.0f);
+        for (int k = 0; k < seq::numKinds; ++k)
+            for (int i = 0; i < seq::maxSteps; ++i)
+                setPlain (apvts, stepId (e, k, i), (float) en.step[(size_t) k][(size_t) i]);
+    }
+
+    void applyPreset (juce::AudioProcessorValueTreeState& apvts, const presets::Preset& p, bool includeChords)
+    {
+        const auto& s = p.settings;
+        for (int e = 0; e < seq::numEngines; ++e)
+        {
+            const auto& en = s.engine[(size_t) e];
+            setPlain (apvts, engineId (e, "solo"), 0.0f);   // a leftover solo would silence the preset's engines
+            setPlain (apvts, engineId (e, "mute"), p.used[(size_t) e] ? 0.0f : 1.0f);
+            if (! p.used[(size_t) e])
+                continue;
+            applyPattern (apvts, e, en);
+            setPlain (apvts, engineId (e, "octave"), (float) en.octave + 2.0f);
+            setPlain (apvts, engineId (e, "arp"), (float) en.arp);
+        }
+
+        setPlain (apvts, "root", (float) s.root);
+        setPlain (apvts, "scale", (float) s.scale);
+        setPlain (apvts, "scale_lock", s.scaleLock ? 1.0f : 0.0f);
+        setPlain (apvts, "borrow_scale", (float) s.borrowScale);
+        setPlain (apvts, "borrow_amount", s.borrowAmount);
+        setPlain (apvts, "base_octave", (float) s.baseOctave);
+        setPlain (apvts, "jitter", s.jitterMs);
+        setPlain (apvts, "slip", s.slipPercent);
+        setPlain (apvts, "chord_source", (float) s.chords.source);
+
+        if (includeChords && p.hasChords)
+        {
+            setPlain (apvts, "chord_length", (float) s.chords.length - 1.0f);
+            setPlain (apvts, "chord_bars", (float) s.chords.barsIndex);
+            setPlain (apvts, "chord_timing", (float) s.chords.timing);
+            setPlain (apvts, "chord_out", s.chords.out ? 1.0f : 0.0f);
+            for (int c = 0; c < seq::maxChordSlots; ++c)
+            {
+                setPlain (apvts, chordId (c, "deg"), (float) s.chords.slot[(size_t) c].degree);
+                setPlain (apvts, chordId (c, "ext"), (float) s.chords.slot[(size_t) c].extension);
+            }
+        }
+    }
+}

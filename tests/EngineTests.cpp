@@ -1,6 +1,8 @@
 // Command-line checks for the sequencer engines, chord generator, scale maths, humanization and MIDI export.
 // Needs no display or audio device, so CI runs it on Linux:  EmberlinePolyTests
 #include "Chords.h"
+#include "FactoryPresets.h"
+#include "Randomise.h"
 #include "MidiClip.h"
 #include "SequencerEngine.h"
 #include "Scales.h"
@@ -748,6 +750,185 @@ namespace
         CHECK (imported.gate[0] == 50);   // an eighth-beat note on a quarter-beat gap
         file.deleteFile();
     }
+
+    bool sameEngine (const seq::EngineSettings& a, const seq::EngineSettings& b)
+    {
+        return a.steps == b.steps && a.rate == b.rate && a.num == b.num && a.den == b.den && a.octave == b.octave && a.arp == b.arp && a.step == b.step;
+    }
+
+    void testDice()
+    {
+        humanize::Rng rng (777);
+        int nearEmpty = 0;
+        for (int round = 0; round < 400; ++round)
+            for (int role = 0; role < dice::numRoles; ++role)
+            {
+                seq::EngineSettings e;
+                dice::randomiseEngine (rng, e, role);
+                CHECK (e.steps >= 1 && e.steps <= seq::maxSteps);
+                CHECK (e.rate >= 0 && e.rate < rates::count);
+                CHECK (e.num >= 1 && e.num <= rates::maxRatio && e.den >= 1 && e.den <= rates::maxRatio);
+                CHECK (e.step[seq::kindVelocity][0] >= 60);                    // the first step always sounds
+                CHECK (e.step[seq::kindProbability][0] == 100);
+                CHECK (e.step[seq::kindPitch][0] == 0);
+
+                int active = 0;
+                bool inRange = true, repeats = true;
+                for (int i = 0; i < seq::maxSteps; ++i)
+                {
+                    const int v = e.step[seq::kindVelocity][(size_t) i], g = e.step[seq::kindGate][(size_t) i], r = e.step[seq::kindRatchet][(size_t) i];
+                    inRange = inRange && v >= 0 && v <= 127 && g >= 10 && g <= 200 && r >= 1 && r <= 4
+                              && std::abs (e.step[seq::kindPitch][(size_t) i]) <= 24 && e.step[seq::kindProbability][(size_t) i] >= 50;
+                    if (i < e.steps)
+                        active += v > 0 ? 1 : 0;
+                    for (int k = 0; k < seq::numKinds; ++k)
+                        repeats = repeats && e.step[(size_t) k][(size_t) i] == e.step[(size_t) k][(size_t) (i % e.steps)];
+                    if (role == dice::roleBass || role == dice::rolePad)
+                        inRange = inRange && r <= (role == dice::roleBass ? 2 : 1);
+                }
+                CHECK (inRange);
+                CHECK (repeats);                                                // lanes tile across all 32 slots
+                nearEmpty += active < (e.steps + 3) / 4 && active < 2 ? 1 : 0;
+            }
+        CHECK (nearEmpty == 0);
+
+        // step counts avoid the engines that are left alone
+        for (int round = 0; round < 200; ++round)
+        {
+            seq::Settings s;
+            for (int e = 0; e < seq::numEngines; ++e)
+                s.engine[(size_t) e].steps = 4 + e;
+            dice::randomiseEngines (rng, s, 0b0101);   // roll engines 1 and 3, keep 2 and 4 (5 and 7 steps)
+            CHECK (s.engine[1].steps == 5 && s.engine[3].steps == 7);
+        }
+
+        // the same seed gives the same roll, and the voicing and routing are left alone
+        seq::EngineSettings a, b;
+        a.channel = b.channel = 5;
+        a.octave = b.octave = -1;
+        a.arp = b.arp = seq::arpRoot;
+        humanize::Rng r1 (99), r2 (99);
+        dice::randomiseEngine (r1, a, dice::roleLead);
+        dice::randomiseEngine (r2, b, dice::roleLead);
+        CHECK (sameEngine (a, b));
+        CHECK (a.channel == 5 && a.octave == -1 && a.arp == seq::arpRoot && ! a.mute);
+    }
+
+    void testPresets()
+    {
+        const auto library = presets::factory();
+        CHECK (library.size() >= 10);
+
+        std::set<juce::String> names;
+        for (auto& p : library)
+        {
+            CHECK (names.insert (p.name).second);   // unique names
+            int engines = 0;
+            for (bool u : p.used)
+                engines += u ? 1 : 0;
+            CHECK (engines >= 1);
+            CHECK (p.settings.chords.length >= 1 && p.settings.chords.length <= seq::maxChordSlots);
+
+            // JSON round trip keeps everything the file stores
+            juce::String error;
+            presets::Preset back;
+            CHECK (presets::fromJson (presets::toJson (p), back, error));
+            CHECK (back.name == p.name && back.category == p.category && back.hasChords == p.hasChords);
+            CHECK (back.used == p.used);
+            CHECK (back.settings.root == p.settings.root && back.settings.scale == p.settings.scale && back.settings.borrowScale == p.settings.borrowScale);
+            CHECK (back.settings.chords.source == p.settings.chords.source && back.settings.chords.length == p.settings.chords.length);
+            CHECK (back.settings.chords.barsIndex == p.settings.chords.barsIndex && back.settings.chords.timing == p.settings.chords.timing);
+            for (int c = 0; c < p.settings.chords.length; ++c)
+                CHECK (back.settings.chords.slot[(size_t) c].degree == p.settings.chords.slot[(size_t) c].degree
+                       && back.settings.chords.slot[(size_t) c].extension == p.settings.chords.slot[(size_t) c].extension);
+            for (int e = 0; e < seq::numEngines; ++e)
+                if (p.used[(size_t) e])
+                    CHECK (sameEngine (back.settings.engine[(size_t) e], p.settings.engine[(size_t) e]));
+
+            // and it makes sound: a used engine produces notes, a muted one never would
+            auto s = p.settings;
+            for (int e = 0; e < seq::numEngines; ++e)
+                s.engine[(size_t) e].mute = ! p.used[(size_t) e], s.engine[(size_t) e].channel = e + 2;
+            s.chords.out = false;
+            const auto events = run (s, 16.0, 512);
+            std::set<int> channels;
+            for (auto& ev : events)
+                if (ev.on)
+                    channels.insert (ev.channel);
+            CHECK (! channels.empty());
+            for (int e = 0; e < seq::numEngines; ++e)
+                CHECK ((channels.count (e + 2) != 0) == p.used[(size_t) e]);
+        }
+
+        // a preset without chords stores none, and loading it reports that
+        presets::Preset noChords = library.front();
+        noChords.hasChords = false;
+        const auto json = presets::toJson (noChords);
+        CHECK (! json.contains ("progression"));
+        juce::String error;
+        presets::Preset parsed;
+        CHECK (presets::fromJson (json, parsed, error) && ! parsed.hasChords);
+
+        // lanes repeat to fill all 32 slots, and values are clamped
+        CHECK (presets::fromJson ("{\"format\":\"emberline-poly-preset\",\"engines\":[{\"engine\":2,\"steps\":3,\"pitch\":[0,7,99],\"velocity\":[100,0],\"rate\":\"1/8T\",\"ratio\":\"3:2\"}]}", parsed, error));
+        CHECK (parsed.used[1] && ! parsed.used[0] && ! parsed.used[2] && ! parsed.used[3]);
+        const auto& e = parsed.settings.engine[1];
+        CHECK (e.steps == 3 && e.num == 3 && e.den == 2 && rates::names()[e.rate] == "1/8T");
+        CHECK (e.step[seq::kindPitch][2] == 24 && e.step[seq::kindPitch][3] == 0 && e.step[seq::kindPitch][31] == 7);   // 99 clamps to 24; the 3-value lane wraps
+        CHECK (e.step[seq::kindVelocity][1] == 0 && e.step[seq::kindVelocity][2] == 100);
+        CHECK (e.step[seq::kindGate][5] == 60 && e.step[seq::kindRatchet][5] == 1);
+
+        // things that are not presets are refused with a message
+        CHECK (! presets::fromJson ("not json", parsed, error) && error.isNotEmpty());
+        CHECK (! presets::fromJson ("{\"format\":\"something-else\"}", parsed, error));
+        CHECK (! presets::fromJson ("{\"format\":\"emberline-poly-preset\",\"engines\":[]}", parsed, error));
+    }
+
+    void testOfflineRender()
+    {
+        auto s = base();
+        s.chords.out = false;   // render forces chord output on
+        s.chords.length = 4;
+        s.chords.barsIndex = 1;   // one bar each
+        for (int c = 0; c < 4; ++c)
+            s.chords.slot[(size_t) c] = { c, chords::extTriad };
+        s.engine[0].mute = true;   // mute and solo do not stop a part being rendered
+        s.jitterMs = 20.0f;
+
+        const auto notes = clip::render (s, 8, 4242);
+        CHECK (! notes.empty());
+
+        int chordNotes = 0, engine1 = 0;
+        double lastChordStart = -1.0;
+        for (auto& n : notes)
+        {
+            CHECK (n.startBeats >= 0.0 && n.startBeats < 32.0);   // inside the 8 bars, jitter clamped at zero
+            if (n.source == 0)
+            {
+                ++chordNotes;
+                lastChordStart = std::max (lastChordStart, n.startBeats);
+                CHECK (std::fmod (n.startBeats, 4.0) == 0.0 && n.lengthBeats > 3.9);   // whole-bar chords, unhumanized
+            }
+            engine1 += n.source == 1 ? 1 : 0;
+        }
+        CHECK (chordNotes == 8 * 3);        // 8 bars, a triad each
+        CHECK (lastChordStart == 28.0);     // the progression runs the full length
+        CHECK (engine1 > 0);
+
+        // the file is the whole window from beat 0, whether or not anything was played
+        juce::MidiFile file;
+        CHECK (clip::buildWindow (notes, clip::chordsOnly, { 0.0, 32.0 }, 120.0, file) == 24);
+        CHECK (file.getNumTracks() == 2);   // tempo track + chords
+        double end = 0.0;
+        for (int t = 0; t < file.getNumTracks(); ++t)
+            end = std::max (end, file.getTrack (t)->getEndTime());
+        CHECK (end >= 31.0 * clip::ticksPerQuarter);
+
+        // two renders with the same seed match; the chord handle never leaks engine notes
+        const auto again = clip::render (s, 8, 4242);
+        CHECK (again.size() == notes.size());
+        CHECK (clip::buildWindow (notes, clip::engineOnly (3), { 0.0, 32.0 }, 120.0, file) == 0);   // engine 4 rests in this setup
+    }
 }
 
 int main()
@@ -771,6 +952,9 @@ int main()
     testInternalClockAndPlayhead();
     testCaptureAndMultiTrackExport();
     testWindowAndImport();
+    testDice();
+    testPresets();
+    testOfflineRender();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

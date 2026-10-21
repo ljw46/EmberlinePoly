@@ -39,6 +39,7 @@ public:
     int playheadStep (int engineIndex) const noexcept { return engine.playheadStep (engineIndex); }
     int chordSlot() const noexcept { return engine.chordSlot(); }
     double currentBpm() const noexcept { return engine.lastBpm(); }
+    bool followingHost() const noexcept { return engine.followingHost(); }
     const ember::seq::CaptureRing& capture() const noexcept { return captureRing; }
     void clearCapture() noexcept { captureRing.clear(); }
 

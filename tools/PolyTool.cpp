@@ -1,5 +1,7 @@
 // Developer helper:  EmberlinePolyTool snapshot out.png   renders the editor (after a few beats of playback) to a PNG
+//                    EmberlinePolyTool presets dir       writes the factory presets as JSON files into dir
 //                    EmberlinePolyTool render out.mid     plays four bars through the processor and writes the multi-track MIDI it produced
+#include "FactoryPresets.h"
 #include "MidiClip.h"
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
@@ -45,13 +47,23 @@ int main (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI gui;
     if (argc < 3)
     {
-        std::printf ("usage: EmberlinePolyTool snapshot|render <output>\n");
+        std::printf ("usage: EmberlinePolyTool snapshot|render|presets <output>\n");
         return 2;
     }
 
     const juce::String command (argv[1]);
     const juce::File out (juce::File::getCurrentWorkingDirectory().getChildFile (argv[2]));
     EmberlinePolyProcessor processor;
+
+    if (command == "presets")
+    {
+        out.createDirectory();
+        int n = 0;
+        for (auto& p : ember::presets::factory())
+            n += out.getChildFile (juce::File::createLegalFileName (p.name)).withFileExtension ("json").replaceWithText (ember::presets::toJson (p)) ? 1 : 0;
+        std::printf ("wrote %d presets to %s\n", n, out.getFullPathName().toRawUTF8());
+        return n > 0 ? 0 : 1;
+    }
 
     if (command == "snapshot")
     {

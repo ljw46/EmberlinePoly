@@ -40,6 +40,7 @@ namespace ember::seq
         int playheadStep (int engine) const noexcept { return playhead[(size_t) engine].load (std::memory_order_relaxed); }
         int chordSlot() const noexcept { return chordPlayhead.load (std::memory_order_relaxed); }
         double lastBpm() const noexcept { return bpmSeen.load (std::memory_order_relaxed); }
+        bool followingHost() const noexcept { return hostSeen.load (std::memory_order_relaxed); }   // the last block had a host timeline
 
     private:
         struct Event { std::int64_t sample = 0; int note = 0, velocity = 0, channel = 1; bool on = false, used = false; };
@@ -80,5 +81,6 @@ namespace ember::seq
         std::array<std::atomic<int>, numEngines> playhead {};
         std::atomic<int> chordPlayhead { -1 };
         std::atomic<double> bpmSeen { 120.0 };
+        std::atomic<bool> hostSeen { false };
     };
 }

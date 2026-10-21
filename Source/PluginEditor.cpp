@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 #include "Chords.h"
+#include "FactoryPresets.h"
+#include "Randomise.h"
 #include "Links.h"
 #include "Version.h"
 
@@ -25,6 +27,15 @@ namespace
     }
 
     juce::File exportFolder() { return juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Emberline Poly"); }
+
+    juce::File userPresetFolder()
+    {
+        return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Emberline").getChildFile ("Poly").getChildFile ("Presets");
+    }
+
+    // Preferences that belong to the session but are not automatable live on the state tree, so they are saved with the project.
+    constexpr const char* presetNameKey = "presetName";
+    constexpr const char* presetChordsKey = "presetLoadsChords";
 }
 
 EmberlinePolyEditor::ChordSlotControls::ChordSlotControls (juce::AudioProcessorValueTreeState& apvts, int slot)
@@ -77,7 +88,7 @@ EmberlinePolyEditor::EmberlinePolyEditor (EmberlinePolyProcessor& p)
 
     for (auto* c : std::initializer_list<juce::Component*> { &root, &scale, &borrowScale, &scaleLock, &borrowAmount, &jitter, &slip, &baseOctave,
                                                             &captureBars, &run, &tempo, &chordSource, &genre, &chordLength, &chordBars, &chordTiming,
-                                                            &chordChannel, &chordOut, &suggestButton, &clearButton, &linksButton, &status })
+                                                            &chordChannel, &chordOut, &suggestButton, &clearButton, &linksButton, &presetsButton, &status, &hostTempo, &liveNote })
         addAndMakeVisible (*c);
     for (auto& b : dragButtons)
         addAndMakeVisible (b);
@@ -90,7 +101,7 @@ EmberlinePolyEditor::EmberlinePolyEditor (EmberlinePolyProcessor& p)
     for (int e = 0; e < seq::numEngines; ++e)
     {
         auto& en = engines[(size_t) e];
-        for (auto* c : std::initializer_list<juce::Component*> { &en.steps, &en.rate, &en.num, &en.den, &en.octave, &en.arp, &en.channel, &en.mute, &en.solo, &en.grid })
+        for (auto* c : std::initializer_list<juce::Component*> { &en.steps, &en.rate, &en.num, &en.den, &en.octave, &en.arp, &en.channel, &en.mute, &en.solo, &en.dice, &en.grid })
             addAndMakeVisible (*c);
 
         const char* modeNames[] { "VEL", "GATE", "PITCH", "PROB", "RATCH" };
@@ -109,6 +120,8 @@ EmberlinePolyEditor::EmberlinePolyEditor (EmberlinePolyProcessor& p)
         }
         en.modes[0].setToggleState (true, juce::dontSendNotification);
 
+        en.dice.setTooltip ("Roll a new pattern for this engine: step count, rate and the step lanes. Octave, note pick and MIDI channel stay as they are.");
+        en.dice.onClick = [this, e] { rollEngine (e); };
         en.mute.setTooltip ("Mute this engine");
         en.solo.setTooltip ("Solo this engine (several can be soloed)");
         en.arp.setTooltip ("How this engine picks notes from the chord on each trigger. Root plays the lowest chord note only.");
@@ -126,11 +139,12 @@ EmberlinePolyEditor::EmberlinePolyEditor (EmberlinePolyProcessor& p)
         const juce::String label = juce::String (handleNames[h]).replaceCharacter (' ', '_');
         b.setButtonText (handleNames[h]);
         b.setColour (juce::TextButton::textColourOffId, h == 0 ? colours::steel : all ? colours::cyan : engineColour (h - 1));
-        b.setTooltip (all ? "Drag onto a DAW track to drop one MIDI file with a track per source, each on its own MIDI channel. Click to save it instead."
+        b.setTooltip (all ? "Drag onto a DAW track to drop one MIDI file with a track per unmuted part, each on its own MIDI channel. Click to save it instead."
                           : "Drag onto a DAW track to drop this part as a MIDI clip. Click to save it as a .mid file instead.");
         b.prepareFile = [this, mask, label] { return exportCapture (mask, label); };
         b.onPlainClick = [this, mask, label] { saveCaptureAs (mask, label); };
-        b.onNothingToDrag = [this] { setStatus ("Nothing captured yet. Press play and let it run for a bar or two."); };
+        b.onNothingToDrag = [this] { setStatus ("Nothing to export for that part (a Live MIDI source needs the transport playing with notes held)."); };
+        b.onDragStarted = [this] (const juce::File& f) { setStatus ("Dragging " + f.getFileName() + ". If the host does not accept the drop (e.g. FL Studio's Patcher), click the handle to save the file instead."); };
     }
 
     suggestButton.setTooltip ("Write a chord progression for the chosen genre (and its scale) into the slots");
@@ -138,6 +152,22 @@ EmberlinePolyEditor::EmberlinePolyEditor (EmberlinePolyProcessor& p)
     clearButton.setTooltip ("Forget the captured notes");
     clearButton.onClick = [this] { processor.clearCapture(); setStatus ("Capture cleared."); };
     linksButton.onClick = [this] { showLinksMenu(); };
+    presetsButton.setTooltip ("Load a factory or saved preset, save the current sound as a JSON file, or roll all engines");
+    presetsButton.onClick = [this] { showPresetMenu(); };
+
+    hostTempo.setJustificationType (juce::Justification::centredLeft);
+    hostTempo.setColour (juce::Label::backgroundColourId, juce::Colour (0xff0a0e15));
+    hostTempo.setColour (juce::Label::outlineColourId, colours::steel.withAlpha (0.4f));
+    hostTempo.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.9f));
+    hostTempo.setFont (juce::FontOptions (13.0f));
+    hostTempo.setInterceptsMouseClicks (false, false);
+    hostTempo.setVisible (false);
+
+    liveNote.setText ("Live MIDI: the chords are the notes you hold (or a MIDI clip of chords) on the plugin's MIDI input. The progression is not used.", juce::dontSendNotification);
+    liveNote.setJustificationType (juce::Justification::centredLeft);
+    liveNote.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+    liveNote.setFont (juce::FontOptions (12.5f));
+    liveNote.setMinimumHorizontalScale (1.0f);
 
     status.setFont (juce::FontOptions (11.5f));
     status.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
@@ -150,7 +180,7 @@ EmberlinePolyEditor::EmberlinePolyEditor (EmberlinePolyProcessor& p)
     slip.setTooltip ("Random variation of each note's length");
     baseOctave.setTooltip ("Octave the chords are built in. Engines shift from there with their own octave setting.");
     run.setTooltip ("Only used when the host provides no transport, e.g. in the Standalone app");
-    chordSource.setTooltip ("Internal: the progression below. Live MIDI: notes you hold (or a MIDI clip of chords) fill the buffer.");
+    chordSource.setTooltip ("Internal: the chord progression below. Live MIDI: notes you hold (or a MIDI clip of chords) fill the chord buffer and the progression is ignored.");
     chordTiming.setTooltip ("On beat, an eighth early (anticipated) or an eighth late (off-beat)");
     chordOut.setTooltip ("Send the internal chords as MIDI on their own channel (internal source only)");
     genre.setTooltip ("Style used by the SUGGEST button");
@@ -173,6 +203,7 @@ void EmberlinePolyEditor::resized()
     scale.setBounds (98, 80, 150, 40);
     scaleLock.setBounds (256, 80, 84, 40);
     borrowScale.setBounds (26, 120, 150, 40);
+    chordSource.setBounds (184, 120, 156, 40);
     borrowAmount.setBounds (350, 76, 100, 84);
     jitter.setBounds (474, 76, 76, 84);
     slip.setBounds (554, 76, 76, 84);
@@ -180,11 +211,11 @@ void EmberlinePolyEditor::resized()
     captureBars.setBounds (730, 80, 82, 40);
     run.setBounds (820, 80, 56, 40);
     tempo.setBounds (884, 80, 130, 40);
+    hostTempo.setBounds (884, 93, 130, 26);
 
     // row B: chords
-    chordSource.setBounds (26, 190, 96, 40);
-    genre.setBounds (130, 190, 128, 40);
-    suggestButton.setBounds (266, 203, 96, 26);
+    genre.setBounds (26, 190, 128, 40);
+    suggestButton.setBounds (162, 203, 96, 26);
     chordLength.setBounds (26, 230, 56, 40);
     chordBars.setBounds (90, 230, 86, 40);
     chordTiming.setBounds (184, 230, 110, 40);
@@ -195,6 +226,7 @@ void EmberlinePolyEditor::resized()
         chordSlots[(size_t) c].degree.setBounds (446 + c * 72, 186, 66, 40);
         chordSlots[(size_t) c].extension.setBounds (446 + c * 72, 228, 66, 40);
     }
+    liveNote.setBounds (446, 186, 560, 82);
 
     // row C: export
     int x = 26;
@@ -205,7 +237,8 @@ void EmberlinePolyEditor::resized()
         x += w + 8;
     }
     clearButton.setBounds (x + 8, 300, 64, 32);
-    linksButton.setBounds (x + 80, 300, 70, 32);
+    linksButton.setBounds (x + 80, 300, 64, 32);
+    presetsButton.setBounds (x + 152, 300, 1014 - (x + 152), 32);
     status.setBounds (26, 336, 980, 18);
 
     // motif engines
@@ -215,6 +248,7 @@ void EmberlinePolyEditor::resized()
         engineBounds[(size_t) e] = { headerX, y, headerW, engineH };
         auto& en = engines[(size_t) e];
 
+        en.dice.setBounds (headerX + 176, y + 5, 62, 20);
         en.mute.setBounds (headerX + 248, y + 5, 34, 20);
         en.solo.setBounds (headerX + 288, y + 5, 34, 20);
         en.steps.setBounds (headerX + 8, y + 22, 84, 86);
@@ -276,7 +310,7 @@ void EmberlinePolyEditor::paint (juce::Graphics& g)
     ember::drawPhoenix (g, phoenix, juce::Rectangle<float> ((float) getWidth() - 58.0f, 6.0f, 42.0f, 42.0f), 0.55f);
 
     // panels
-    const char* panelTitles[] { "SCALE & CHORD GUARD", "HUMANIZE", "GLOBAL", "CHORD MEMORY & PROGRESSION", "EXPORT TO DAW" };
+    const char* panelTitles[] { "SCALE, GUARD & CHORD SOURCE", "HUMANIZE", "GLOBAL", "CHORD PROGRESSION", "EXPORT TO DAW" };
     const juce::Colour panelColours[] { colours::cyan, colours::amber, colours::steel, colours::steel, colours::cyan };
     for (size_t i = 0; i < panels.size(); ++i)
     {
@@ -346,6 +380,18 @@ int EmberlinePolyEditor::captureBarsSelected() const
 
 void EmberlinePolyEditor::timerCallback()
 {
+    updateHostDisplay();
+    updateChordSourceDisplay();
+
+    {
+        const auto name = processor.apvts.state.getProperty (presetNameKey).toString();
+        if (name != lastPresetName)
+        {
+            lastPresetName = name;
+            presetsButton.setButtonText (name.isEmpty() ? juce::String ("PRESETS") : "PRESET: " + name.toUpperCase().substring (0, 22));
+        }
+    }
+
     for (int e = 0; e < seq::numEngines; ++e)
         engines[(size_t) e].grid.setPlayhead (processor.playheadStep (e));
 
@@ -367,12 +413,24 @@ void EmberlinePolyEditor::timerCallback()
 
     if (++statusTicks % 10 == 0)
     {
+        if (lastChordSource == seq::chordInternal)
+        {
+            const juce::String text = "Drag a handle to export " + juce::String (captureBarsSelected()) + " bars, rendered from the start of the progression. "
+                                      "You do not need to play first. Click a handle to save the file instead.";
+            if (text != lastCaptureText)
+            {
+                lastCaptureText = text;
+                status.setText (text, juce::dontSendNotification);
+            }
+            return;
+        }
+
         const auto notes = processor.capture().snapshot();
         const int bars = captureBarsSelected();
         const int inWindow = clip::countInWindow (notes, clip::allSources, bars);
         const auto w = clip::chooseWindow (notes, bars);
 
-        const juce::String text = inWindow == 0 ? "Nothing captured yet. Play the transport to record the patterns."
+        const juce::String text = inWindow == 0 ? "Live MIDI: nothing captured yet. Play the transport and hold some chords to record the patterns."
                                                 : juce::String (inWindow) + " notes over " + juce::String (juce::roundToInt ((w.endBeats - w.startBeats) / 4.0))
                                                     + " bars ready to drag (chords " + juce::String (clip::countInWindow (notes, clip::chordsOnly, bars)) + ", engines "
                                                     + juce::String (inWindow - clip::countInWindow (notes, clip::chordsOnly, bars)) + ").";
@@ -382,6 +440,49 @@ void EmberlinePolyEditor::timerCallback()
             status.setText (text, juce::dontSendNotification);
         }
     }
+}
+
+// With a host timeline the plugin follows the host's tempo and transport; the no-host controls only matter in the Standalone app.
+void EmberlinePolyEditor::updateHostDisplay()
+{
+    const bool host = processor.followingHost();
+    if (host)
+        hostTempo.setText (juce::String (processor.currentBpm(), 1) + " BPM  (host)", juce::dontSendNotification);
+
+    if ((int) host == lastHost)
+        return;
+
+    lastHost = (int) host;
+    hostTempo.setVisible (host);
+    run.setEnabled (! host);
+    tempo.setEnabled (! host);
+    run.setAlpha (host ? 0.4f : 1.0f);
+    run.setCaption (host ? "HOST" : "NO HOST");
+    tempo.setCaption (host ? "HOST TEMPO" : "NO-HOST TEMPO");
+    run.setTooltip (host ? "The host's transport is running this plugin" : "Only used when the host provides no transport, e.g. in the Standalone app");
+    tempo.setTooltip (host ? "The plugin follows the host's tempo" : "Tempo of the internal clock, used when the host provides no transport");
+}
+
+// The progression, its timing and the chord MIDI output only apply to the internal source; in Live MIDI mode they are greyed out.
+void EmberlinePolyEditor::updateChordSourceDisplay()
+{
+    const int source = (int) processor.apvts.getRawParameterValue ("chord_source")->load();
+    if (source == lastChordSource)
+        return;
+
+    lastChordSource = source;
+    const bool internal = source == seq::chordInternal;
+    for (auto* c : std::initializer_list<juce::Component*> { &genre, &suggestButton, &chordLength, &chordBars, &chordTiming, &chordChannel, &chordOut, &dragButtons[0] })
+    {
+        c->setEnabled (internal);
+        c->setAlpha (internal ? 1.0f : 0.35f);
+    }
+    for (auto& cs : chordSlots)
+    {
+        cs.degree.setVisible (internal);
+        cs.extension.setVisible (internal);
+    }
+    liveNote.setVisible (! internal);
 }
 
 void EmberlinePolyEditor::setStatus (const juce::String& text)
@@ -410,7 +511,183 @@ void EmberlinePolyEditor::suggestProgression()
     setStatus ("Suggested a " + chords::genreNames()[style] + " progression in " + scales::names()[suggestion.scale] + ".");
 }
 
+// ---------------------------------------------------------------- dice & presets
+void EmberlinePolyEditor::rollEngine (int e)
+{
+    humanize::Rng rng ((std::uint64_t) juce::Time::currentTimeMillis() * 0x9e3779b97f4a7c15ull + (std::uint64_t) juce::Time::getHighResolutionTicks() + 7919ull * (unsigned long long) e);
+    auto settings = params::capturePreset (processor.apvts, false).settings;
+    dice::randomiseEngines (rng, settings, 1u << e);
+    params::applyPattern (processor.apvts, e, settings.engine[(size_t) e]);
+
+    const auto& en = settings.engine[(size_t) e];
+    setStatus ("Engine " + juce::String (e + 1) + " rolled: " + juce::String (en.steps) + " steps at " + rates::names()[en.rate]
+               + (en.num != en.den ? ", ratio " + juce::String (en.num) + ":" + juce::String (en.den) : juce::String()) + ".");
+}
+
+void EmberlinePolyEditor::loadPreset (const presets::Preset& p)
+{
+    const bool chordsToo = (bool) processor.apvts.state.getProperty (presetChordsKey, true);
+    params::applyPreset (processor.apvts, p, chordsToo);
+    processor.apvts.state.setProperty (presetNameKey, p.name, nullptr);
+
+    int used = 0;
+    for (bool u : p.used)
+        used += u ? 1 : 0;
+    setStatus ("Loaded \"" + p.name + "\": " + juce::String (used) + (used == 1 ? " engine" : " engines")
+               + (p.hasChords && ! chordsToo ? ", chords kept." : "."));
+}
+
+void EmberlinePolyEditor::showPresetMenu()
+{
+    static const auto factoryPresets = presets::factory();
+    const bool chordsToo = (bool) processor.apvts.state.getProperty (presetChordsKey, true);
+    const auto userFiles = userPresetFolder().findChildFiles (juce::File::findFiles, false, "*.json");
+
+    juce::PopupMenu menu;
+    juce::StringArray categories;
+    for (auto& p : factoryPresets)
+        categories.addIfNotAlreadyThere (p.category);
+
+    enum { loadFile = 1, saveAs, openFolder, toggleChords, rollAll, firstFactory = 100, firstUser = 400 };
+    for (auto& category : categories)
+    {
+        juce::PopupMenu sub;
+        for (size_t i = 0; i < factoryPresets.size(); ++i)
+            if (factoryPresets[i].category == category)
+                sub.addItem (firstFactory + (int) i, factoryPresets[i].name);
+        menu.addSubMenu (category, sub);
+    }
+
+    juce::PopupMenu mine;
+    for (int i = 0; i < userFiles.size() && i < 200; ++i)
+        mine.addItem (firstUser + i, userFiles[i].getFileNameWithoutExtension());
+    if (userFiles.isEmpty())
+        mine.addItem (-1, "(none saved yet)", false);
+    menu.addSubMenu ("My presets", mine);
+
+    menu.addSeparator();
+    menu.addItem (rollAll, "Roll all engines");
+    menu.addSeparator();
+    menu.addItem (saveAs, "Save preset...");
+    menu.addItem (loadFile, "Load from file...");
+    menu.addItem (openFolder, "Show presets folder");
+    menu.addSeparator();
+    menu.addItem (toggleChords, "Presets also set the chord progression", true, chordsToo);
+
+    juce::Component::SafePointer<EmberlinePolyEditor> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetsButton).withMinimumWidth (220), [safe, userFiles] (int choice)
+    {
+        if (safe == nullptr || choice == 0)
+            return;
+
+        if (choice >= firstUser)
+        {
+            juce::String error;
+            presets::Preset p;
+            if (presets::fromJson (userFiles[choice - firstUser].loadFileAsString(), p, error))
+                safe->loadPreset (p);
+            else
+                safe->setStatus (error);
+        }
+        else if (choice >= firstFactory)
+            safe->loadPreset (factoryPresets[(size_t) (choice - firstFactory)]);
+        else if (choice == rollAll)
+        {
+            for (int e = 0; e < seq::numEngines; ++e)
+                safe->rollEngine (e);
+            safe->setStatus ("Rolled all four engines.");
+        }
+        else if (choice == toggleChords)
+            safe->processor.apvts.state.setProperty (presetChordsKey, ! (bool) safe->processor.apvts.state.getProperty (presetChordsKey, true), nullptr);
+        else if (choice == openFolder)
+        {
+            userPresetFolder().createDirectory();
+            userPresetFolder().revealToUser();
+        }
+        else if (choice == saveAs)
+            safe->savePresetDialog();
+        else if (choice == loadFile)
+        {
+            safe->chooser = std::make_shared<juce::FileChooser> ("Load a preset", userPresetFolder(), "*.json");
+            safe->chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe] (const juce::FileChooser& fc)
+            {
+                if (safe == nullptr || fc.getResult() == juce::File())
+                    return;
+                juce::String error;
+                presets::Preset p;
+                if (presets::fromJson (fc.getResult().loadFileAsString(), p, error))
+                    safe->loadPreset (p);
+                else
+                    safe->setStatus (error);
+            });
+        }
+    });
+}
+
+void EmberlinePolyEditor::savePresetDialog()
+{
+    auto* alert = new juce::AlertWindow ("Save preset", "Saves the engines, scale and humanize settings as a JSON file in the presets folder.", juce::MessageBoxIconType::NoIcon, this);
+    alert->addTextEditor ("name", processor.apvts.state.getProperty (presetNameKey).toString(), "Name");
+    alert->addComboBox ("chords", { "With the chord progression", "Without the chord progression" }, "Chords");
+    alert->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    alert->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<EmberlinePolyEditor> safe (this);
+    alert->enterModalState (true, juce::ModalCallbackFunction::create ([safe, alert] (int result)
+    {
+        if (result != 1 || safe == nullptr)
+            return;
+
+        auto name = alert->getTextEditorContents ("name").trim();
+        if (name.isEmpty())
+            name = "Untitled";
+
+        auto preset = params::capturePreset (safe->processor.apvts, alert->getComboBoxComponent ("chords")->getSelectedItemIndex() == 0);
+        preset.name = name;
+        preset.category = "User";
+
+        const auto folder = userPresetFolder();
+        folder.createDirectory();
+        const auto file = folder.getChildFile (juce::File::createLegalFileName (name)).withFileExtension ("json");
+        if (file.replaceWithText (presets::toJson (preset)))
+        {
+            safe->processor.apvts.state.setProperty (presetNameKey, name, nullptr);
+            safe->setStatus ("Saved " + file.getFileName() + " to the presets folder.");
+        }
+        else
+            safe->setStatus ("Could not write " + file.getFullPathName());
+    }), true);
+}
+
 // ---------------------------------------------------------------- MIDI export / import
+// With the internal chord source the clip is rendered offline (full length, from the first chord, no playback needed). With Live MIDI the
+// result depends on the notes being played, so the capture of the running transport is used instead.
+int EmberlinePolyEditor::writeExport (unsigned sourceMask, const juce::File& file)
+{
+    const double bpm = processor.currentBpm();
+    const int bars = captureBarsSelected();
+    auto settings = params::capturePreset (processor.apvts, false).settings;
+
+    if (settings.chords.source != seq::chordInternal)
+        return clip::write (processor.capture().snapshot(), sourceMask, bars, bpm, file);
+
+    if (sourceMask == clip::allSources)   // ALL TRACKS follows mute and solo; a part's own handle always exports it
+    {
+        bool anySolo = false;
+        for (auto& e : settings.engine)
+            anySolo = anySolo || e.solo;
+        for (int e = 0; e < seq::numEngines; ++e)
+        {
+            const auto& en = settings.engine[(size_t) e];
+            if (en.mute || (anySolo && ! en.solo))
+                sourceMask &= ~clip::engineOnly (e);
+        }
+    }
+
+    const auto seed = (std::uint64_t) juce::Time::currentTimeMillis() * 0x9e3779b97f4a7c15ull + (std::uint64_t) juce::Time::getHighResolutionTicks();
+    return clip::writeWindow (clip::render (settings, bars, seed), sourceMask, { 0.0, (double) bars * 4.0 }, bpm, file);
+}
+
 juce::File EmberlinePolyEditor::exportCapture (unsigned sourceMask, const juce::String& label)
 {
     const double bpm = processor.currentBpm();
@@ -418,12 +695,12 @@ juce::File EmberlinePolyEditor::exportCapture (unsigned sourceMask, const juce::
     clip::deleteStaleExports (folder);
     const auto file = folder.getChildFile ("EmberlinePoly_" + label + "_" + juce::String (juce::roundToInt (bpm)) + "bpm_"
                                            + juce::Time::getCurrentTime().formatted ("%Y%m%d-%H%M%S") + ".mid");
-    return clip::write (processor.capture().snapshot(), sourceMask, captureBarsSelected(), bpm, file) > 0 ? file : juce::File();
+    return writeExport (sourceMask, file) > 0 ? file : juce::File();
 }
 
 void EmberlinePolyEditor::saveCaptureAs (unsigned sourceMask, const juce::String& label)
 {
-    chooser = std::make_shared<juce::FileChooser> ("Save the captured pattern as a MIDI file",
+    chooser = std::make_shared<juce::FileChooser> ("Save the pattern as a MIDI file",
                                                    juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("EmberlinePoly_" + label + ".mid"),
                                                    "*.mid");
     juce::Component::SafePointer<EmberlinePolyEditor> safe (this);
@@ -434,8 +711,8 @@ void EmberlinePolyEditor::saveCaptureAs (unsigned sourceMask, const juce::String
             return;
 
         const auto target = fc.getResult().withFileExtension ("mid");
-        const int count = clip::write (safe->processor.capture().snapshot(), sourceMask, safe->captureBarsSelected(), safe->processor.currentBpm(), target);
-        safe->setStatus (count > 0 ? "Saved " + target.getFileName() : "Nothing captured for that part yet. Press play first.");
+        const int count = safe->writeExport (sourceMask, target);
+        safe->setStatus (count > 0 ? "Saved " + target.getFileName() : "Nothing to export for that part.");
     });
 }
 
