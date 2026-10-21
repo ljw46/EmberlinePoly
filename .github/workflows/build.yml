@@ -90,7 +90,13 @@ jobs:
       # so this one reports without failing the build.
       - name: pluginval (AU)
         continue-on-error: true
-        run: pluginval/pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate-in-process "build/EmberlinePoly_artefacts/Release/AU/Emberline Poly.component"
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/EmberlinePoly_artefacts/Release/AU/Emberline Poly.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -a | grep -i Epol || true
+          auval -v aumu Epol Embl
+          pluginval/pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate-in-process "$HOME/Library/Audio/Plug-Ins/Components/Emberline Poly.component"
       - name: Package
         run: |
           a=build/EmberlinePoly_artefacts/Release

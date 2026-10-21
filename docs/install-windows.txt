@@ -16,11 +16,21 @@ USING IT
   Emberline Poly makes MIDI, not sound. Put it on an instrument track, then send its MIDI to a synth:
     - Reaper:   add a synth after it on the same track (FX chain), or route the track's MIDI to another track.
     - Ableton:  put it on a MIDI track and set another MIDI track's "MIDI From" to this track and "Emberline Poly".
-    - FL Studio: set the plugin's MIDI output port, then give your synth the same input port.
+    - FL Studio: a single MIDI output port can't pick a channel, so use Patcher (see "FL Studio and several parts" below).
   Press play: the four engines follow the host's transport and tempo. Each part sends on its own MIDI channel:
   chords on 1, engines 1 to 4 on 2 to 5 (change them in the plugin). Set each instrument to listen to its channel.
   To take a pattern with you, let it play a few bars, then drag CHORDS, an ENGINE or ALL TRACKS onto a MIDI track
   (or click the handle to save a .mid file).
+
+FL Studio and several parts
+  The plugin's MIDI output port carries every channel at once. To send each part to its own synth, load Emberline Poly
+  inside Patcher:
+    1. In Patcher, add Emberline Poly, then add one "To FL Studio" output per part, each set to its own MIDI port.
+    2. Put a "MIDI Out" plugin between Emberline Poly's MIDI output and each "To FL Studio" output, and set each one
+       to a channel: 1 chords, 2 engine 1, 3 engine 2, 4 engine 3, 5 engine 4 (or whatever you set in the plugin).
+       That passes only that channel on that port.
+    3. Set each synth's MIDI input port to match, listening on any channel.
+  The same set-up is needed for other MIDI generators such as InstaComposer and Scaler.
 
 "Windows protected your PC" warning?
   The beta isn't code-signed yet, so Windows is cautious. Click "More info", then "Run anyway".
