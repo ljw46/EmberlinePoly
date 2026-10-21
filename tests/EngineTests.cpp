@@ -2,6 +2,7 @@
 // Needs no display or audio device, so CI runs it on Linux:  EmberlinePolyTests
 #include "Chords.h"
 #include "FactoryPresets.h"
+#include "Pattern.h"
 #include "Randomise.h"
 #include "MidiClip.h"
 #include "SequencerEngine.h"
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <map>
 #include <set>
+#include <tuple>
 
 #pragma GCC diagnostic ignored "-Wfloat-equal"   // window and rate maths here is exact on purpose
 
@@ -481,7 +483,13 @@ namespace
         s.engine[1].arp = seq::arpChordHold;
         s.engine[1].step[seq::kindRatchet].fill (2);
         s.chords.out = true;
-        const auto a = run (s, 8.0, 512), b = run (s, 8.0, 37), c = run (s, 8.0, 4096);
+        auto a = run (s, 8.0, 512), b = run (s, 8.0, 37), c = run (s, 8.0, 4096);
+        // events at the very same sample may come out in a different order for different block sizes; the stream must otherwise match
+        for (auto* v : { &a, &b, &c })
+            std::stable_sort (v->begin(), v->end(), [] (const Ev& x, const Ev& y)
+            {
+                return std::tie (x.sample, x.on, x.channel, x.note) < std::tie (y.sample, y.on, y.channel, y.note);
+            });
         CHECK (a.size() == b.size() && a.size() == c.size());
         bool same = a.size() == b.size() && a.size() == c.size();
         for (size_t i = 0; same && i < a.size(); ++i)
@@ -929,6 +937,209 @@ namespace
         CHECK (again.size() == notes.size());
         CHECK (clip::buildWindow (notes, clip::engineOnly (3), { 0.0, 32.0 }, 120.0, file) == 0);   // engine 4 rests in this setup
     }
+
+    // ------------------------------------------------------------------ lanes, late, harmony, pitch mask, note rules
+    std::vector<int> notesOf (const std::vector<Ev>& ev, int channel = 2)
+    {
+        std::vector<int> n;
+        for (auto& e : ons (ev, channel)) n.push_back (e.note);
+        return n;
+    }
+
+    void testLanesAndRules()
+    {
+        // lane step maths: advance every `divide` grid steps, wrap at `length`, negative positions wrap the same way
+        const int expectDiv2[] { 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, 2, 2 };
+        for (int n = 0; n < 12; ++n)
+            CHECK (rates::laneStepAt (n, 2, 3) == expectDiv2[n]);
+        CHECK (rates::laneStepAt (-1, 1, 3) == 2 && rates::laneStepAt (-1, 2, 3) == 2 && rates::laneStepAt (-3, 2, 3) == 1);
+        CHECK (rates::laneStepAt (5, 0, 0) == 0);   // nonsense lengths and divides are treated as 1
+
+        // lanes of different lengths drift against each other: velocity 2 (every other step rests), pitch 3
+        auto s = base();
+        s.chords.length = 1;
+        s.engine[0].arp = seq::arpRoot;
+        s.engine[0].steps = 8;
+        s.engine[0].laneLength[seq::kindVelocity] = 2;
+        s.engine[0].laneLength[seq::kindPitch] = 3;
+        s.engine[0].step[seq::kindVelocity].fill (0);
+        for (int i = 0; i < seq::maxSteps; i += 2) s.engine[0].step[seq::kindVelocity][(size_t) i] = 100;
+        for (int i = 0; i < seq::maxSteps; ++i) s.engine[0].step[seq::kindPitch][(size_t) i] = (i % 3) * 2;   // 0, 2, 4 in C major: C D E
+        auto notes = notesOf (run (s, 3.0, 512));
+        // grid steps 0, 2, 4, 6, 8, 10 sound; pitch index is the grid step mod 3: 0, 2, 1, 0, 2, 1
+        CHECK (notes == std::vector<int> ({ 60, 64, 62, 60, 64, 62 }));
+
+        // the clock divide slows one lane: pitch advances every 2 steps while every step sounds
+        s = base();
+        s.engine[0].arp = seq::arpRoot;
+        s.engine[0].steps = 4;
+        s.engine[0].laneDivide[seq::kindPitch] = 2;
+        s.engine[0].laneLength[seq::kindPitch] = 2;
+        s.engine[0].step[seq::kindPitch][0] = 0;
+        s.engine[0].step[seq::kindPitch][1] = 2;
+        notes = notesOf (run (s, 2.0, 512));
+        CHECK (notes == std::vector<int> ({ 60, 60, 62, 62, 60, 60, 62, 62 }));
+
+        // playheads are per lane
+        {
+            seq::Engine e;
+            e.prepare (sr);
+            auto ps = base();
+            ps.engine[0].steps = 4;
+            ps.engine[0].laneLength[seq::kindPitch] = 3;
+            ps.engine[0].laneDivide[seq::kindGate] = 2;
+            juce::MidiBuffer midi;
+            e.process (ps, { true, true, 0.6, 120.0 }, {}, midi, 64);   // grid step 2 (0.5 to 0.75 beats)
+            CHECK (e.playheadStep (0, seq::kindVelocity) == 2);
+            CHECK (e.playheadStep (0, seq::kindPitch) == 2);
+            CHECK (e.playheadStep (0, seq::kindGate) == 1 % 4);   // 2 / 2 = 1
+            CHECK (e.playheadStep (0, seq::kindLate) == 2);
+        }
+
+        // late moves the onset: +20 % of a 0.25 beat step is 0.05 beat, 1102.5 samples at 120 bpm
+        s = base();
+        s.engine[0].arp = seq::arpRoot;
+        const auto flat = ons (run (s, 2.0, 512), 2);
+        s.engine[0].step[seq::kindLate].fill (20);
+        const auto late = ons (run (s, 2.0, 512), 2);
+        s.engine[0].step[seq::kindLate].fill (-20);
+        const auto early = ons (run (s, 2.0, 512), 2);
+        CHECK (flat.size() >= 7 && std::abs ((int) flat.size() - (int) late.size()) <= 1 && std::abs ((int) flat.size() - (int) early.size()) <= 1);   // the run's end cuts the last note
+        for (size_t i = 1; i < std::min ({ flat.size(), late.size(), early.size() }); ++i)   // step 0 cannot go before the start
+        {
+            CHECK (std::abs (late[i].sample - flat[i].sample - 1102) <= 2);
+            CHECK (std::abs (flat[i].sample - early[i].sample - 1102) <= 2);
+        }
+
+        // harmony adds a second note on the step, at the same time, snapped to the scale
+        s = base();
+        s.engine[0].arp = seq::arpRoot;
+        s.engine[0].step[seq::kindHarmony].fill (7);
+        const auto harm = ons (run (s, 1.0, 512), 2);
+        CHECK (harm.size() == 8 && harm[0].sample == harm[1].sample);
+        CHECK (harm[0].note == 60 && harm[1].note == 67);
+
+        // pitch applies only to the chord notes in the mask: +12 on the lowest note of the triad
+        s = base();
+        s.engine[0].arp = seq::arpChordHold;
+        s.engine[0].step[seq::kindPitch].fill (12);
+        auto chord = notesOf (run (s, 0.2, 512));
+        std::sort (chord.begin(), chord.end());
+        CHECK (chord == std::vector<int> ({ 72, 76, 79 }));
+        s.engine[0].pitchMask = 0b001;
+        chord = notesOf (run (s, 0.2, 512));
+        std::sort (chord.begin(), chord.end());
+        CHECK (chord == std::vector<int> ({ 64, 67, 72 }));
+
+        // note rules by pitch class: block E, nudge it up (F is in the scale), or nudge G down (the guard has already run, so F# stays)
+        s = base();
+        s.engine[0].arp = seq::arpChordHold;
+        s.noteRule[4] = 1;
+        chord = notesOf (run (s, 0.2, 512));
+        std::sort (chord.begin(), chord.end());
+        CHECK (chord == std::vector<int> ({ 60, 67 }));
+        s.noteRule[4] = 2;
+        chord = notesOf (run (s, 0.2, 512));
+        std::sort (chord.begin(), chord.end());
+        CHECK (chord == std::vector<int> ({ 60, 65, 67 }));
+        s.noteRule[4] = 0;
+        s.noteRule[7] = 3;
+        chord = notesOf (run (s, 0.2, 512));
+        std::sort (chord.begin(), chord.end());
+        CHECK (chord == std::vector<int> ({ 60, 64, 66 }));
+        for (auto& r : s.noteRule) r = 1;   // everything blocked: silence, and no crash
+        CHECK (ons (run (s, 1.0, 512)).empty());
+
+        // presets keep the new fields
+        presets::Preset p;
+        p.name = "lanes";
+        p.settings = base();
+        p.settings.engine[0].steps = 6;
+        p.settings.engine[0].laneLength[seq::kindPitch] = 3;
+        p.settings.engine[0].laneDivide[seq::kindGate] = 2;
+        p.settings.engine[0].pitchMask = 0b101;
+        for (int i = 0; i < seq::maxSteps; ++i)
+        {
+            p.settings.engine[0].step[seq::kindPitch][(size_t) i] = (i % 3) * 3;
+            p.settings.engine[0].step[seq::kindLate][(size_t) i] = i % 2 == 0 ? 10 : -10;
+            p.settings.engine[0].step[seq::kindHarmony][(size_t) i] = i % 3 == 0 ? 7 : 0;
+        }
+        p.settings.noteRule[1] = 1;
+        p.settings.noteRule[6] = 2;
+        p.used = { true, false, false, false };
+        juce::String error;
+        presets::Preset back;
+        CHECK (presets::fromJson (presets::toJson (p), back, error));
+        const auto& b = back.settings.engine[0];
+        CHECK (b.steps == 6 && b.laneLength[seq::kindPitch] == 3 && b.divideOf (seq::kindGate) == 2 && b.divideOf (seq::kindPitch) == 1 && b.pitchMask == 0b101);
+        CHECK (b.step == p.settings.engine[0].step);
+        CHECK (back.settings.noteRule[1] == 1 && back.settings.noteRule[6] == 2 && back.settings.noteRule[0] == 0);
+        const auto json = presets::toJson (presets::factory().front());
+        CHECK (! json.contains ("late") && ! json.contains ("note_rules") && ! json.contains ("lane_length"));   // defaults stay out of the file
+    }
+
+    void testPatternText()
+    {
+        seq::EngineSettings e;
+        e.steps = 11;
+        e.rate = 9;
+        e.num = 3;
+        e.den = 2;
+        e.pitchMask = 0b1011;
+        e.laneLength[seq::kindPitch] = 5;
+        e.laneDivide[seq::kindGate] = 4;
+        for (int k = 0; k < seq::numKinds; ++k)
+            for (int i = 0; i < seq::maxSteps; ++i)
+                e.step[(size_t) k][(size_t) i] = (k * 7 + i * 3) % 20 - 10;
+        e.octave = 2;      // voicing and routing are not part of a slot
+        e.channel = 9;
+
+        seq::EngineSettings back;
+        back.octave = -1;
+        back.channel = 3;
+        CHECK (patterns::decode (patterns::encode (e), back));
+        CHECK (back.steps == 11 && back.rate == 9 && back.num == 3 && back.den == 2 && back.pitchMask == 0b1011);
+        CHECK (back.laneLength == e.laneLength && back.divideOf (seq::kindGate) == 4 && back.divideOf (seq::kindPitch) == 1);
+        CHECK (back.step == e.step);
+        CHECK (back.octave == -1 && back.channel == 3);
+        CHECK (! patterns::decode ("1 2 3", back) && ! patterns::decode ("", back));
+
+        CHECK (patterns::decode (juce::String ("99 99 99 99 999 ") + patterns::encode (e).fromFirstOccurrenceOf (" ", false, false).fromFirstOccurrenceOf (" ", false, false)
+                                     .fromFirstOccurrenceOf (" ", false, false).fromFirstOccurrenceOf (" ", false, false).fromFirstOccurrenceOf (" ", false, false), back));
+        CHECK (back.steps == seq::maxSteps && back.rate == rates::count - 1 && back.num == rates::maxRatio && back.pitchMask == 255);   // out-of-range values clamp
+    }
+
+    void testChordLabels()
+    {
+        // A natural minor (scale 1, root A = 9): i, VI, III, VII
+        CHECK (chords::label (1, 9, 0, chords::extTriad).name == "Am");
+        CHECK (chords::label (1, 9, 0, chords::ext7th).name == "Am7");
+        CHECK (chords::label (1, 9, 5, chords::extTriad).name == "F");
+        CHECK (chords::label (1, 9, 5, chords::ext7th).name == "Fmaj7");
+        CHECK (chords::label (1, 9, 2, chords::ext7th).name == "Cmaj7");
+        CHECK (chords::label (1, 9, 6, chords::ext7th).name == "G7");
+        CHECK (chords::label (1, 9, 6, chords::extTriad).name == "G");
+        CHECK (chords::label (1, 9, 1, chords::extTriad).name == "Bdim");
+        CHECK (chords::label (1, 9, 0, chords::ext9th).name == "Am9");
+        CHECK (chords::label (1, 9, 5, chords::ext9th).name == "Fmaj9");
+        CHECK (chords::label (1, 9, 0, chords::extSus4).name == "Asus4");
+        CHECK (chords::label (1, 9, 0, chords::extSus2).name == "Asus2");
+        CHECK (chords::label (1, 9, 0, chords::ext7sus4).name == "A7sus4");
+        CHECK (chords::label (0, 0, 0, chords::extTriad).name == "C" && chords::label (0, 0, 4, chords::ext7th).name == "G7");   // C major: I, V7
+
+        // flat keys use flats: C minor (Eb major's relative) and F major; sharp keys keep sharps
+        CHECK (chords::label (1, 0, 5, chords::extTriad).name == "Ab" && chords::label (1, 0, 6, chords::extTriad).name == "Bb" && chords::label (1, 0, 2, chords::ext7th).name == "Ebmaj7");
+        CHECK (chords::label (0, 5, 3, chords::extTriad).name == "Bb");   // F major: IV is Bb
+        CHECK (chords::label (1, 4, 5, chords::extTriad).name == "C" && chords::label (0, 7, 3, chords::extTriad).name == "C");   // E minor and G major: no accidentals
+        CHECK (chords::label (0, 2, 2, chords::extTriad).name == "F#m");   // D major: iii is F#m, a sharp key
+
+        CHECK (chords::label (1, 9, 0, chords::extTriad).numeral == "i");
+        CHECK (chords::label (1, 9, 0, chords::ext7th).numeral == "i7");
+        CHECK (chords::label (1, 9, 5, chords::ext7th).numeral == "VIM7");
+        CHECK (chords::label (1, 9, 6, chords::extTriad).numeral == "VII");
+        CHECK (chords::label (1, 9, 1, chords::extTriad).numeral == juce::String ("ii") + juce::String::charToString ((juce::juce_wchar) 0x00b0));
+        CHECK (chords::label (1, 9, 0, chords::extSus4).numeral == "Isus4");
+    }
 }
 
 int main()
@@ -955,6 +1166,9 @@ int main()
     testDice();
     testPresets();
     testOfflineRender();
+    testLanesAndRules();
+    testPatternText();
+    testChordLabels();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

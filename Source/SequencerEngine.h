@@ -37,7 +37,7 @@ namespace ember::seq
                       int numSamples, CaptureRing* capture = nullptr);
 
         // Step each engine was on at the start of the last block, or -1 while stopped. Read by the editor.
-        int playheadStep (int engine) const noexcept { return playhead[(size_t) engine].load (std::memory_order_relaxed); }
+        int playheadStep (int engine, int lane = kindVelocity) const noexcept { return playhead[(size_t) engine][(size_t) lane].load (std::memory_order_relaxed); }
         int chordSlot() const noexcept { return chordPlayhead.load (std::memory_order_relaxed); }
         double lastBpm() const noexcept { return bpmSeen.load (std::memory_order_relaxed); }
         bool followingHost() const noexcept { return hostSeen.load (std::memory_order_relaxed); }   // the last block had a host timeline
@@ -49,6 +49,7 @@ namespace ember::seq
         void scanInput (const juce::MidiBuffer&);
         Buffer bufferAt (const Settings&, double beat) const noexcept;
         int guard (const Settings&, int note, bool borrow) noexcept;
+        static int applyRule (const Settings&, int note) noexcept;   // the per-pitch-class rule; -1 when the note is blocked
         void scheduleEngineStep (const Settings&, int engine, double boundary, double ppq, double bps, CaptureRing*);
         void scheduleChord (const Settings&, long long index, double startBeat, double ppq, double bps, CaptureRing*);
         void addNote (double onsetBeat, double lengthBeats, int note, int velocity, int channel, int source,
@@ -78,7 +79,7 @@ namespace ember::seq
         int modWheel = 0;
 
         humanize::Rng rng;
-        std::array<std::atomic<int>, numEngines> playhead {};
+        std::array<std::array<std::atomic<int>, numKinds>, numEngines> playhead {};   // current step of every lane of every engine
         std::atomic<int> chordPlayhead { -1 };
         std::atomic<double> bpmSeen { 120.0 };
         std::atomic<bool> hostSeen { false };

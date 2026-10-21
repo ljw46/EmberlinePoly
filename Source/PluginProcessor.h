@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Audition.h"
 #include "Capture.h"
 #include "Parameters.h"
 #include "SequencerEngine.h"
@@ -36,9 +37,10 @@ public:
     void setStateInformation (const void*, int) override;
 
     // For the editor: where each engine's playhead is, which chord is playing, and the notes captured for Drag-to-DAW.
-    int playheadStep (int engineIndex) const noexcept { return engine.playheadStep (engineIndex); }
+    int playheadStep (int engineIndex, int lane = ember::seq::kindVelocity) const noexcept { return engine.playheadStep (engineIndex, lane); }
     int chordSlot() const noexcept { return engine.chordSlot(); }
     double currentBpm() const noexcept { return engine.lastBpm(); }
+    bool auditionLoaded() const noexcept { return player.loaded(); }
     bool followingHost() const noexcept { return engine.followingHost(); }
     const ember::seq::CaptureRing& capture() const noexcept { return captureRing; }
     void clearCapture() noexcept { captureRing.clear(); }
@@ -50,6 +52,8 @@ private:
     ember::seq::Settings settings;
     ember::seq::Engine engine;
     ember::seq::CaptureRing captureRing;
+    ember::audition::Player player;
+    bool auditionWasOn = false;
     juce::MidiBuffer incoming;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EmberlinePolyProcessor)

@@ -18,6 +18,7 @@ bool EmberlinePolyProcessor::isBusesLayoutSupported (const BusesLayout& layouts)
 void EmberlinePolyProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate);
+    player.prepare (sampleRate);
     incoming.ensureSize (2048);
 }
 
@@ -50,6 +51,26 @@ void EmberlinePolyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     incoming.clear();
     incoming.swapWith (midi);   // the host's MIDI is read for transpose / mod wheel; `midi` is now the empty output
     engine.process (settings, transport, incoming, midi, buffer.getNumSamples(), &captureRing);
+
+    // the optional audition sampler plays what was just generated, each MIDI channel with the sound of the part that sends on it
+    if (settings.audition.on)
+    {
+        std::array<ember::audition::Route, 16> routes {};
+        auto assign = [&routes] (int channel, int sound, float pan)
+        {
+            auto& r = routes[(size_t) juce::jlimit (1, 16, channel) - 1];
+            if (r.sound == ember::audition::soundOff)   // when parts share a channel, the first one named here (chords, then engine 1 ...) decides
+                r = { sound, pan };
+        };
+        assign (settings.chords.channel, settings.audition.chordsSound, 0.0f);
+        const float pans[] { 0.0f, -0.3f, 0.3f, 0.15f };
+        for (size_t e = 0; e < (size_t) ember::seq::numEngines; ++e)
+            assign (settings.engine[e].channel, settings.audition.engineSound[e], pans[e]);
+        player.render (buffer, midi, routes, settings.audition.level);
+    }
+    else if (auditionWasOn)
+        player.reset();
+    auditionWasOn = settings.audition.on;
 }
 
 juce::AudioProcessorEditor* EmberlinePolyProcessor::createEditor() { return new EmberlinePolyEditor (*this); }

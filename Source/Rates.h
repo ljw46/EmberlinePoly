@@ -51,4 +51,13 @@ namespace ember::rates
         const auto n = (long long) juce::jmax (1, numSteps);
         return (int) (((index % n) + n) % n);
     }
+
+    // Which step of a lane is playing when the engine's clock is on grid step `gridIndex`: the lane advances once every `divide` grid steps
+    // and wraps at its own `length`. Stateless like stepAt, so every lane stays locked to the timeline.
+    inline int laneStepAt (long long gridIndex, int divide, int length) noexcept
+    {
+        const auto d = (long long) juce::jmax (1, divide), n = (long long) juce::jmax (1, length);
+        const auto q = gridIndex >= 0 ? gridIndex / d : -((-gridIndex + d - 1) / d);
+        return (int) (((q % n) + n) % n);
+    }
 }

@@ -39,23 +39,41 @@ Emberline Poly makes **MIDI, not sound**. Put it on an instrument track and send
 
 ### Motif engines
 
-Each of the four engines is a complete voice with 1 to 32 steps. Every step has:
+Each of the four engines is a complete voice with 1 to 32 steps. Every step has seven values, each in its own **lane**:
 
-| Value | Range | Notes |
+| Lane | Range | Notes |
 |---|---|---|
-| **Pitch** | -24 to +24 semitones | Shift from the note picked out of the chord buffer. |
-| **Velocity** | 0 to 127 | 0 is a rest. |
+| **Pitch** | -24 to +24 semitones | Shift from the note picked out of the chord buffer (the roll shows -12 to +12). |
+| **Velocity** | 0 to 127 | 0 is a rest. This lane is the engine's rhythm. |
 | **Gate** | 10 to 200 % | Length as a percentage of the step; over 100 % overlaps the next note. |
 | **Probability** | 0 to 100 % | Chance that the step plays. |
 | **Ratchet** | 1 to 4 | Splits the step into that many equal retriggers, each a little softer. |
+| **Late** | -50 to +50 % | Moves the step early or late by that share of the step: swing, push and drag, step by step. |
+| **Harmony** | -12 to +12 semitones | Adds a second note that far from the first (0 is off). |
 
 And every engine has its own **step count** (polymeter), **rate** (1/1 to 1/32, with triplets and dotted values) plus an `n:d`
 **ratio** from 1 to 16 (polyrhythm: `5:4` plays a quarter faster, `3:4` at three quarters speed), an **octave** shift of -2 to +2, **mute**
 and **solo**, and its **MIDI channel**. Step positions are calculated from the host's quarter-note position, so engines stay locked to the
 timeline through loops, jumps and tempo changes. With no host transport (the Standalone app) an internal clock runs instead.
 
-In the editor each pad shows its step: height is velocity, width is gate, brightness is probability, dots are ratchets and the number is the
-pitch shift. Pick what you are editing with the **VEL / GATE / PITCH / PROB / RATCH** buttons, then click or drag on the pads.
+**Every lane can have its own length and clock divide.** Drag the `len` number on a lane's label to give it its own length (double-click puts it back on the
+engine's step count), and the `/n` number to make the lane advance once every n steps. A 5-step velocity lane against a 3-step pitch lane gives a pattern that only repeats every 15 steps,
+and the highlighted column moves through each lane at its own pace.
+
+**Pitch moves notes** (eight small numbers in the engine header) chooses which chord notes the pitch lane shifts, counting from the lowest. Turn off 1 and 3 and only the middle of the chord moves.
+
+### The editor
+
+A selected engine is edited in the large pattern view; the four slim rows above it show every engine's velocity pattern with its own moving playhead, and clicking a row selects it.
+
+* Click or drag across a lane to paint values. Pitch is a piano roll. Double-click or right-click a step to put it back to its default.
+* The **ON / OFF** row switches steps on and off without losing their velocity, and the green bar under it sets the step count. Steps 17 to 32 are on the second page (click the page label).
+* **Pattern slots A to D** on each engine hold variations. The first time you pick a slot it starts as a copy of the current pattern; shift-click a slot to copy it to another slot or clear it. Slots are saved with the project.
+* The **chord strip** shows the progression as named blocks ("Am7", "Fmaj7"). Click a block to change its chord or colour, duplicate or remove it, and use the **+** to add one. The playing chord is lit.
+* **Settings** (top right) holds the borrow scale, humanize, chord timing, the internal clock and **note rules**.
+
+**Note rules** are a one-octave piano: click a key to cycle *play*, *block*, *a semitone up* or *a semitone down* for that pitch class. They are applied to every generated note after the scale guard, so a note you do not want is
+simply never played, or is nudged to one you do.
 
 ### Note pick (chord buffer)
 
@@ -109,6 +127,14 @@ survives a preset change. Engines a preset does not use are muted. User presets 
 **DICE** on each engine rolls a new pattern (step count, rate, ratio and the five step lanes). The roll is shaped per role (bass, lead, pad, accent): the first step always
 sounds, rests and probability dips are limited, the bass never ratchets past two, and step counts avoid the other engines' lengths. Octave, note pick and MIDI channel stay as they are.
 
+### Audition
+
+Emberline Poly makes MIDI, but **AUDITION** (bottom right) plays the generated notes through a small built-in sampler, so you can hear a pattern before sending it anywhere. Each part has its own sound:
+Pluck, Bass, Pad, Keys, Bell or Off (the engines choose theirs in their header, the chords in Settings). It is off by default, and the audio output is silent otherwise. Turn it off when the MIDI goes to a real instrument.
+
+The sounds are samples rendered by `tools/make_audition_samples.py` and compiled into the plugin, so they carry no third-party licence and cost next to no CPU: playback is plain resampling.
+`EmberlinePolyTool audition out.wav` bounces the current patterns through them to a WAV file.
+
 ### MIDI routing
 
 Each part sends on its own channel (1 to 16), so one instance can drive several instruments. Defaults: base chords on channel 1, engines 1 to 4
@@ -156,7 +182,7 @@ it to your VST3 folder (Windows: `C:\Program Files\Common Files\VST3`).
 The tests cover the scale and rate maths, the chord generator, the note-pick modes, multi-engine polymeter and polyrhythm, channel routing, humanization, and multi-track MIDI export. They need no
 display or audio device.
 
-`EmberlinePolyTool` (`snapshot out.png`, `render out.mid`, `presets dir`) renders the editor to an image and bounces a few bars of generated multi-track MIDI; `presets dir` writes the factory presets out as JSON.
+`EmberlinePolyTool` (`snapshot out.png [engine] [settings]`, `render out.mid`, `audition out.wav`, `presets dir`, `selftest x`) renders the editor to an image and bounces a few bars of generated multi-track MIDI; `presets dir` writes the factory presets out as JSON.
 
 ## Licence
 

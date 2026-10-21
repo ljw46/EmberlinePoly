@@ -18,6 +18,9 @@ namespace ember::presets
             int octave, arp;                  // octave shift -2..2, seq::ArpMode
             std::vector<int> pitch, vel, gate, prob, ratch;
             int num = 1, den = 1;
+            std::vector<int> late {}, harm {};                       // optional lanes (empty = all zero)
+            std::array<int, seq::numKinds> laneLen {}, laneDiv {};   // optional per-lane length (0 follows the engine) and clock divide (0 or 1 = none)
+            int steps = 0;                                           // 0 = as many as the velocity lane has
         };
 
         struct Def
@@ -59,16 +62,21 @@ namespace ember::presets
             {
                 auto& e = s.engine[(size_t) part.engine - 1];
                 p.used[(size_t) part.engine - 1] = true;
-                e.steps = (int) part.vel.size();
+                e.steps = part.steps > 0 ? part.steps : (int) part.vel.size();
                 e.rate = part.rate;
                 e.num = part.num;
                 e.den = part.den;
                 e.octave = part.octave;
                 e.arp = part.arp;
-                const std::vector<int>* laneData[] { &part.pitch, &part.vel, &part.gate, &part.prob, &part.ratch };
+                const std::vector<int>* laneData[] { &part.pitch, &part.vel, &part.gate, &part.prob, &part.ratch, &part.late, &part.harm };
                 for (int k = 0; k < seq::numKinds; ++k)
+                {
+                    e.laneLength[(size_t) k] = part.laneLen[(size_t) k];
+                    e.laneDivide[(size_t) k] = juce::jmax (1, part.laneDiv[(size_t) k]);
+                    const int length = e.lengthOf (k);
                     for (int i = 0; i < seq::maxSteps; ++i)
-                        e.step[(size_t) k][(size_t) i] = (*laneData[k])[(size_t) (i % e.steps) % laneData[k]->size()];
+                        e.step[(size_t) k][(size_t) i] = laneData[k]->empty() ? 0 : (*laneData[k])[(size_t) (i % length) % laneData[k]->size()];
+                }
             }
             return p;
         }
@@ -136,6 +144,23 @@ namespace ember::presets
             { "Heartbeat", "Melodic House", "A single lead engine: five steps on eighth notes, a pattern that turns over every five beats.",
               A, 2, { { 0, 0 }, { 5, 0 }, { 2, 0 }, { 6, 0 } }, 2, 0, 3.0f, 10.0f,
               { Part { 1, 7, 1, arpCyclic, { 0, 7, 5, 12, 7 }, { 100, 75, 90, 70, 85 }, { 55 }, { 100 }, { 1 } } } },
+
+            // ---- Lanes (each lane of an engine on its own length, clock divide or timing)
+            { "Lane Drift", "Lanes", "One lead engine whose lanes run different lengths: a 5 step rhythm, a 3 step melody and a 4 step gate. The whole pattern only repeats every 60 steps.",
+              A, 1, { { 0, 1 }, { 5, 0 }, { 2, 0 }, { 6, 0 } }, 2, 0, 3.0f, 10.0f,
+              { Part { 1, 7, -2, arpRoot, { 0 }, { 105, 0, 85, 0, 95, 0, 80, 90 }, { 55 }, { 100 }, { 1 } },
+                Part { 2, 10, 1, arpCyclic, { 0, 7, 12 }, { 100, 0, 85, 70, 0 }, { 55, 40, 60, 45 }, { 100 }, { 1 }, 1, 1, {}, {}, { 3, 0, 4, 0, 0, 0, 0 }, {}, 5 } } },
+
+            { "Swung Pluck", "Lanes", "A sixteenth pluck with the offbeats pushed late (the Late lane) and an occasional fifth on top (the Harmony lane).",
+              C, 4, { { 0, 1 }, { 4, 0 }, { 5, 1 }, { 3, 0 } }, 2, 0, 2.0f, 8.0f,
+              { Part { 1, 7, -2, arpRoot, { 0 }, { 0, 100, 0, 105 }, { 50 }, { 100 }, { 1 } },
+                Part { 2, 10, 1, arpLowHigh, { 0 }, { 100, 70, 90, 65, 95, 70, 85, 60 }, { 45 }, { 100 }, { 1 }, 1, 1,
+                       { 0, 22, 0, 22, 0, 22, 0, 22 }, { 0, 0, 0, 7, 0, 0, 0, 0 } } } },
+
+            { "Half-Time Echo", "Lanes", "The gate lane runs at half speed against the pitch lane, so each pitch sounds twice with a different length.",
+              D, 2, { { 0, 0 }, { 0, 0 }, { 5, 0 }, { 6, 0 } }, 2, 0, 2.0f, 6.0f,
+              { Part { 1, 7, -2, arpRoot, { 0 }, { 100, 0, 90, 0, 100, 0, 85, 0 }, { 55 }, { 100 }, { 1 } },
+                Part { 2, 9, 1, arpCyclic, { 0, 3, 7, 12 }, { 90, 80, 85, 75, 90, 80, 85, 75 }, { 30, 80 }, { 100 }, { 1 }, 1, 1, {}, {}, { 0, 0, 0, 0, 0, 0, 0 }, { 1, 1, 2, 1, 1, 1, 1 } } } },
 
             // ---- Starter
             { "Single Arp", "Starter", "One engine arpeggiating the chords. A good place to start building from.",

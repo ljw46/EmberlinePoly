@@ -1,11 +1,14 @@
 #pragma once
 
+#include "ChordStrip.h"
 #include "EditorWidgets.h"
 #include "MidiClip.h"
+#include "PatternEditor.h"
 #include "PhoenixLogo.h"
 #include "PluginProcessor.h"
 #include "Preset.h"
 
+// The editor lays everything out on a fixed 1240 x 896 canvas (the "content") and scales that canvas to whatever size the host gives the window.
 class EmberlinePolyEditor final : public juce::AudioProcessorEditor,
                                   public juce::DragAndDropContainer,
                                   public juce::FileDragAndDropTarget,
@@ -15,17 +18,64 @@ public:
     explicit EmberlinePolyEditor (EmberlinePolyProcessor&);
     ~EmberlinePolyEditor() override;
 
-    void paint (juce::Graphics&) override;
-    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
 
     bool isInterestedInFileDrag (const juce::StringArray&) override;
-    void fileDragEnter (const juce::StringArray&, int, int) override { dropHint = true; repaint(); }
-    void fileDragExit (const juce::StringArray&) override { dropHint = false; repaint(); }
+    void fileDragEnter (const juce::StringArray&, int, int) override { dropHint = true; content.repaint(); }
+    void fileDragExit (const juce::StringArray&) override { dropHint = false; content.repaint(); }
     void filesDropped (const juce::StringArray&, int, int) override;
 
+    static constexpr int baseWidth = 1240, baseHeight = 896;
+
+    // For the developer tool's snapshots.
+    void selectEngine (int engine);
+    void showSettings (bool show);
+    ember::ui::PatternEditor& patternEditor() noexcept { return patterns; }
+
 private:
+    // The scaled canvas: it only forwards painting, so all the drawing code stays here with the state it needs.
+    struct Content final : juce::Component
+    {
+        std::function<void (juce::Graphics&)> onPaint, onPaintOver;
+        void paint (juce::Graphics& g) override { if (onPaint) onPaint (g); }
+        void paintOverChildren (juce::Graphics& g) override { if (onPaintOver) onPaintOver (g); }
+    };
+
+    // One slim row per engine: name, step count and rate, a miniature of the velocity lane with its own playhead, and the engine's voicing.
+    struct EngineRow final : juce::Component
+    {
+        EngineRow (juce::AudioProcessorValueTreeState&, int engineIndex);
+        void setPlayhead (int step);
+        void setSelected (bool);
+        void refresh();
+        void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override { if (onSelect) onSelect(); }
+        std::function<void()> onSelect;
+
+    private:
+        int index;
+        juce::AudioProcessorValueTreeState& apvts;
+        int playhead = -1;
+        bool selected = false;
+        std::uint32_t lastHash = 0;
+    };
+
+    // The controls of one engine that sit above the pattern lanes; only the selected engine's set is visible.
+    struct EngineControls
+    {
+        EngineControls (juce::AudioProcessorValueTreeState&, int engine);
+        ember::ui::BarField steps;
+        ember::ui::ComboField rate, num, den, octave, arp, channel, sound;
+        ember::ui::MaskToggles pitchMask;
+        ember::ui::ToggleButton mute, solo;
+        std::array<juce::TextButton, ember::patterns::numSlots> slots;
+        juce::TextButton dice { "DICE" };
+    };
+
     void timerCallback() override;
+    void layout();
+    void paintContent (juce::Graphics&);
+    void paintOverContent (juce::Graphics&);
     int captureBarsSelected() const;
     int writeExport (unsigned sourceMask, const juce::File&);
     juce::File exportCapture (unsigned sourceMask, const juce::String& label);
@@ -34,62 +84,62 @@ private:
     void applyImport (int engine, const ember::clip::Imported&);
     void showLinksMenu();
     void showPresetMenu();
+    void cyclePreset (int direction);
     void loadPreset (const ember::presets::Preset&);
     void savePresetDialog();
     void rollEngine (int engine);
+    void showSlotMenu (int engine, int slot);
+    void toggleSettings() { showSettings (! drawer.isVisible()); }
     void updateHostDisplay();
     void updateChordSourceDisplay();
+    void updateSlotButtons();
     void setStatus (const juce::String&);
 
     EmberlinePolyProcessor& processor;
     EmberLookAndFeel lnf;
     juce::Image phoenix;
+    Content content;
+    ember::params::PatternBank bank;
 
-    // scale & chord guard, humanize, global
-    ember::ui::ComboField root, scale, borrowScale;
-    ember::ui::ToggleField scaleLock;
-    ember::ui::Knob borrowAmount, jitter, slip;
-    ember::ui::ComboField baseOctave, captureBars;
-    ember::ui::ToggleField run;
-    ember::ui::BarField tempo;
+    // top bar
+    juce::TextButton presetPrev { "<" }, presetNext { ">" }, presetName { "Presets" }, presetSave { "SAVE" }, settingsButton { "SETTINGS" };
     juce::Label hostTempo;
-    int lastHost = -1;
+
+    // settings drawer (scale options, humanize, chord timing, note rules, internal clock)
+    struct Drawer final : juce::Component
+    {
+        void paint (juce::Graphics&) override;
+    } drawer;
+    ember::ui::ComboField borrowScale, baseOctave, chordBars, chordTiming, chordChannel, chordsSound;
+    ember::ui::Knob borrowAmount, jitter, slip;
+    ember::ui::ToggleField chordOut, run, auditionOn;
+    ember::ui::BarField auditionLevel;
+    ember::ui::BarField tempo;
+    ember::ui::NoteRules noteRules;
+    juce::Label noteHint;
+    bool lastHost = false, hostKnown = false;
 
     // chords
-    ember::ui::ComboField chordSource, genre, chordLength, chordBars, chordTiming, chordChannel;
-    ember::ui::ToggleField chordOut;
-    juce::TextButton suggestButton { "SUGGEST" };
-    struct ChordSlotControls
-    {
-        ChordSlotControls (juce::AudioProcessorValueTreeState&, int slot);
-        ember::ui::ComboField degree, extension;
-    };
-    std::deque<ChordSlotControls> chordSlots;
+    ember::ui::ComboField root, scale, genre, captureBars;
+    ember::ui::ToggleField scaleLock;
+    juce::TextButton sourceInternal { "Internal" }, sourceLive { "Live MIDI" }, suggestButton { "SUGGEST" };
+    ember::ui::ChordStrip chordStrip;
     juce::Label liveNote;
     int lastChordSource = -1;
 
+    // motif engines
+    std::deque<EngineRow> rows;
+    std::deque<EngineControls> engines;
+    ember::ui::PatternEditor patterns;
+    int selected = 0;
+
     // export
     std::array<ember::ui::DragButton, ember::seq::numSources + 1> dragButtons;   // chords, engines 1-4, all tracks
-    juce::TextButton clearButton { "CLEAR" }, linksButton { "LINKS" }, presetsButton { "PRESETS" };
+    juce::TextButton clearButton { "CLEAR" }, linksButton { "LINKS" };
     juce::Label status;
 
-    // motif engines
-    struct EngineControls
-    {
-        EngineControls (juce::AudioProcessorValueTreeState&, int engine);
-        ember::ui::Knob steps;
-        ember::ui::ComboField rate, num, den, octave, arp, channel;
-        ember::ui::ToggleButton mute, solo;
-        juce::TextButton dice { "DICE" };
-        std::array<juce::TextButton, ember::ui::MotifGrid::numModes> modes;
-        ember::ui::MotifGrid grid;
-    };
-    std::deque<EngineControls> engines;
-    std::array<juce::Rectangle<int>, ember::seq::numEngines> engineBounds;
-    std::array<juce::Rectangle<int>, 5> panels;
-    juce::Rectangle<int> ratioColon[ember::seq::numEngines];
-
     juce::TooltipWindow tooltips { this, 600 };
+    juce::ComponentBoundsConstrainer constrainer;
     std::shared_ptr<juce::FileChooser> chooser;
     int statusTicks = 0, statusCountdown = 0;
     bool dropHint = false;

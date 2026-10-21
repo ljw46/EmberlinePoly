@@ -57,8 +57,9 @@ namespace ember::seq
         arpHigh.fill (false);
         internalPpq = expectedPpq = 0.0;
         sampleClock = 0;
-        for (auto& p : playhead)
-            p.store (-1, std::memory_order_relaxed);
+        for (auto& lanes : playhead)
+            for (auto& p : lanes)
+                p.store (-1, std::memory_order_relaxed);
         chordPlayhead.store (-1, std::memory_order_relaxed);
     }
 
@@ -106,6 +107,23 @@ namespace ember::seq
         if (s.scaleLock)
             note = scales::snap (borrow ? s.borrowScale : s.scale, note - s.root) + s.root;
         return foldNote (note);
+    }
+
+    // Pitch-class rules (the arp's note prevention): blocked notes are dropped, the others move a semitone up or down until a free pitch is found.
+    int Engine::applyRule (const Settings& s, int note) noexcept
+    {
+        for (int tries = 0; tries < 12; ++tries)
+        {
+            if (note < 0 || note > 127)
+                return -1;
+            const int rule = s.noteRule[(size_t) (note % 12)];
+            if (rule == 0)
+                return note;
+            if (rule == 1)
+                return -1;
+            note += rule == 2 ? 1 : -1;
+        }
+        return -1;
     }
 
     void Engine::push (std::int64_t sample, int note, int velocity, int channel, bool on)
@@ -161,8 +179,11 @@ namespace ember::seq
             return;
 
         const double stepLen = engineBeats (en);
-        const int step = rates::stepAt (boundary, stepLen, en.steps);
-        auto value = [&] (int kind) { return en.step[(size_t) kind][(size_t) step]; };
+        const auto grid = (long long) std::floor (boundary / stepLen + 1.0e-6);
+        auto value = [&] (int kind)   // every lane has its own length and clock divide
+        {
+            return en.step[(size_t) kind][(size_t) rates::laneStepAt (grid, en.divideOf (kind), en.lengthOf (kind))];
+        };
 
         const int velocity = value (kindVelocity), gate = value (kindGate), probability = value (kindProbability);
         const int ratchet = juce::jlimit (1, 4, value (kindRatchet));
@@ -175,42 +196,55 @@ namespace ember::seq
         if (buffer.count == 0)
             return;
 
-        // note pick
+        // note pick: positions in the chord buffer (0 is the lowest note)
         std::array<int, maxBufferNotes> picked {};
         int numPicked = 0;
         switch (en.arp)
         {
             case arpChordHold:
-                for (int i = 0; i < buffer.count; ++i) picked[(size_t) numPicked++] = buffer.note[(size_t) i];
+                for (int i = 0; i < buffer.count; ++i) picked[(size_t) numPicked++] = i;
                 break;
             case arpLowHigh:
-                picked[(size_t) numPicked++] = arpHigh[(size_t) e] ? buffer.note[(size_t) buffer.count - 1] : buffer.note[0];
+                picked[(size_t) numPicked++] = arpHigh[(size_t) e] ? buffer.count - 1 : 0;
                 arpHigh[(size_t) e] = ! arpHigh[(size_t) e];
                 break;
             case arpRandom:
-                picked[(size_t) numPicked++] = buffer.note[(size_t) juce::jmin (buffer.count - 1, (int) (rng.uniform() * buffer.count))];
+                picked[(size_t) numPicked++] = juce::jmin (buffer.count - 1, (int) (rng.uniform() * buffer.count));
                 break;
             case arpRoot:
-                picked[(size_t) numPicked++] = buffer.note[0];
+                picked[(size_t) numPicked++] = 0;
                 break;
             default:   // as played / cyclic
-                picked[(size_t) numPicked++] = buffer.note[(size_t) (arpCounter[(size_t) e] % buffer.count)];
+                picked[(size_t) numPicked++] = arpCounter[(size_t) e] % buffer.count;
                 ++arpCounter[(size_t) e];
                 break;
         }
 
         const bool borrow = modWheel >= 64 || (s.borrowAmount > 0.0f && rng.uniform() * 100.0 < (double) s.borrowAmount);
-        std::array<int, maxBufferNotes> notes {};
+        const int pitchShift = value (kindPitch), harmony = value (kindHarmony);
+        std::array<int, 2 * maxBufferNotes> notes {};
         int numNotes = 0;
+        auto add = [&] (int n)
+        {
+            n = applyRule (s, guard (s, n, borrow));
+            if (n >= 0 && std::find (notes.begin(), notes.begin() + numNotes, n) == notes.begin() + numNotes)
+                notes[(size_t) numNotes++] = n;
+        };
         for (int i = 0; i < numPicked; ++i)
         {
-            const int n = guard (s, picked[(size_t) i] + value (kindPitch) + 12 * en.octave, borrow);
-            if (std::find (notes.begin(), notes.begin() + numNotes, n) == notes.begin() + numNotes)
-                notes[(size_t) numNotes++] = n;
+            const int position = picked[(size_t) i];
+            const bool shifted = ((en.pitchMask >> juce::jmin (position, 7)) & 1) != 0;
+            const int n = buffer.note[(size_t) position] + (shifted ? pitchShift : 0) + 12 * en.octave;
+            add (n);
+            if (harmony != 0)
+                add (n + harmony);
         }
+        if (numNotes == 0)
+            return;
 
         // a ratchet splits the step into equal retriggers, each a little softer than the last
         const double sub = stepLen / ratchet;
+        const double late = (double) juce::jlimit (-50, 50, value (kindLate)) * 0.01 * stepLen;   // the whole step moves early or late
         const int channel = juce::jlimit (1, 16, en.channel);
         for (int r = 0; r < ratchet; ++r)
         {
@@ -219,7 +253,7 @@ namespace ember::seq
             const double jitter = humanize::jitterMs (rng, (double) s.jitterMs);
             const double slip = s.slipPercent > 0.0f ? humanize::slipFactor (rng, (double) s.slipPercent) : 1.0;
             for (int i = 0; i < numNotes; ++i)
-                addNote (boundary + r * sub, sub * (double) gate * 0.01, notes[(size_t) i], v, channel, e + 1, ppq, bps, jitter, slip, capture);
+                addNote (boundary + late + r * sub, sub * (double) gate * 0.01, notes[(size_t) i], v, channel, e + 1, ppq, bps, jitter, slip, capture);
         }
     }
 
@@ -280,8 +314,9 @@ namespace ember::seq
             haveBoundary.fill (false);
             haveChord = false;
             internalPpq = 0.0;
-            for (auto& p : playhead)
-                p.store (-1, std::memory_order_relaxed);
+            for (auto& lanes : playhead)
+                for (auto& p : lanes)
+                    p.store (-1, std::memory_order_relaxed);
             chordPlayhead.store (-1, std::memory_order_relaxed);
             sampleClock += numSamples;
             return;
@@ -330,7 +365,9 @@ namespace ember::seq
             const double stepLen = engineBeats (s.engine[(size_t) e]);
             double boundary = haveBoundary[(size_t) e] ? gridPoint (lastBoundary[(size_t) e], stepLen, false) : gridPoint (ppq, stepLen, true);
 
-            for (int guardCount = 0; boundary < horizon && guardCount < 256; ++guardCount)
+            // a step may be placed up to half a step early by its Late value, so look that far ahead
+            const double engineHorizon = horizon + 0.5 * stepLen;
+            for (int guardCount = 0; boundary < engineHorizon && guardCount < 256; ++guardCount)
             {
                 scheduleEngineStep (s, e, boundary, ppq, bps, capture);
                 lastBoundary[(size_t) e] = boundary;
@@ -342,7 +379,12 @@ namespace ember::seq
         emit (midiOut, numSamples);
 
         for (int e = 0; e < numEngines; ++e)
-            playhead[(size_t) e].store (rates::stepAt (ppq, engineBeats (s.engine[(size_t) e]), s.engine[(size_t) e].steps), std::memory_order_relaxed);
+        {
+            const auto& en = s.engine[(size_t) e];
+            const auto grid = (long long) std::floor (ppq / engineBeats (en) + 1.0e-6);
+            for (int k = 0; k < numKinds; ++k)
+                playhead[(size_t) e][(size_t) k].store (rates::laneStepAt (grid, en.divideOf (k), en.lengthOf (k)), std::memory_order_relaxed);
+        }
         chordPlayhead.store (s.chords.source == chordInternal ? chords::slotOf (chords::indexAt (ppq, chordLen, shift), s.chords.length) : -1,
                              std::memory_order_relaxed);
 

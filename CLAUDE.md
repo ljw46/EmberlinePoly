@@ -22,7 +22,8 @@ The version lives only in `project(... VERSION)` in `CMakeLists.txt`; a release 
 
 The code splits into a GUI-free core and the plugin shell. `EmberlinePolyCore` (static lib, depends on `juce_audio_basics` only) holds everything testable:
 
-- `Settings.h`: a plain snapshot struct (4 `EngineSettings`, `ChordSettings`, scale / guard / humanize options). The engine only ever sees this, never JUCE parameters.
+- `Settings.h`: a plain snapshot struct (4 `EngineSettings`, `ChordSettings`, scale / guard / humanize options, note rules, audition options). The engine only ever sees this, never JUCE parameters. Each engine has seven lanes
+  (`StepKind`: pitch, velocity, gate, probability, ratchet, late, harmony), each with its own `laneLength` (0 follows `steps`) and `laneDivide`, read through `rates::laneStepAt` (stateless, like `stepAt`), and a `pitchMask` over chord-buffer positions.
 - `SequencerEngine.*`: `Engine::process` is the heart. Four **motif engines**, each on its own grid (step count + rate + `n:d` ratio), fire notes. On a trigger an engine
   reads the **chord buffer** at that beat (`bufferAt`: held MIDI notes in live mode, otherwise the internal progression's chord), picks from it by arp mode
   (cyclic / chord hold / low&high / random / root), adds the step's pitch and the engine octave, runs the scale guard (`guard`), and emits a note-on/off pair
@@ -49,8 +50,13 @@ The plugin shell:
   Adding an engine option means: layout entry, `Reader` pointer + read, field in `Settings`, use in the engine. Choice params store an index (the `Reader` converts octave
   and channel), so changing a choice list changes saved sessions.
 - `PluginProcessor.*`: builds a `seq::Transport` from the host playhead (ppq, or seconds x bpm as a fallback), swaps the incoming MIDI into the engine as input, and the engine
-  writes the output into the host buffer. Declared as a synth with MIDI in and out; the stereo audio output stays silent.
-- `PluginEditor.*` / `EditorWidgets.h` / `EmberLookAndFeel.*`: the editor is also a `DragAndDropContainer` and `FileDragAndDropTarget`. `MotifGrid` draws one engine's pads and edits the int
-  parameters of whichever kind the edit mode selects. A 30 Hz timer reads the engines' playheads and the playing chord (`Engine::playheadStep`, `chordSlot`, atomics). `DragButton`
-  (`performExternalDragDropOfFiles`) is used for the six export handles; a click without a drag opens a save dialog. The suggest button runs `chords::suggest` on the message thread and
-  writes the result into the parameters. The look-and-feel and palette are ported from Spectralis.
+  writes the output into the host buffer. Declared as a synth with MIDI in and out. The stereo audio output is silent unless AUDITION is on, in which case `audition::Player` renders the engine's output MIDI
+  (each channel with the sound of the part that sends on it).
+- `PluginEditor.*`: the editor draws on a fixed 1240 x 896 `Content` canvas that is scaled to the window (so child bounds are in canvas units). It owns the top bar, the settings drawer, the chord strip, one slim `EngineRow` per engine and the
+  per-engine header controls (only the selected engine's are visible). Other pieces: `PatternEditor.*` (the lane stack: painting, mouse editing, per-lane len/div fields; it is the only place that edits step parameters), `ChordStrip.*` (named chord blocks
+  via `chords::label`), `EditorWidgets.h` (combo/knob/toggle fields, `NoteRules`, `MaskToggles`, `DragButton`), `EmberLookAndFeel.*` (palette and look ported from Spectralis), `Audition.*` (the sample player; samples are in `Assets/audition`, made by
+  `tools/make_audition_samples.py` and embedded through `EmberlineAssets`) and `Pattern.h` (pattern slot text; `params::PatternBank` keeps slots A to D in the state tree, and switching slots writes the stored pattern into the live parameters).
+  A 30 Hz timer reads the playheads (`Engine::playheadStep(engine, lane)`) and the playing chord (atomics) and refreshes the widgets. The editor is also a `DragAndDropContainer` and `FileDragAndDropTarget`; `DragButton`
+  (`performExternalDragDropOfFiles`) is used for the six export handles, and a click without a drag opens a save dialog. The suggest button runs `chords::suggest` on the message thread and writes the result into the parameters.
+
+`EmberlinePolyTool selftest x` exercises the pieces that need a real processor (pattern slots, preset apply, saved state, the pattern editor's mouse editing, the audition sampler); CI runs it after the engine tests.

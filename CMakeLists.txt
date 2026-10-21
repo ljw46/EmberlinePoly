@@ -45,7 +45,9 @@ juce_add_plugin(EmberlinePoly
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
 
-juce_add_binary_data(EmberlineAssets HEADER_NAME AssetData.h NAMESPACE AssetData SOURCES Assets/phoenix.png)
+# The audition samples are rendered by tools/make_audition_samples.py and committed; the plugin plays them back with a plain sampler.
+file(GLOB EMBERLINE_AUDITION_SAMPLES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Assets/audition/*.wav)
+juce_add_binary_data(EmberlineAssets HEADER_NAME AssetData.h NAMESPACE AssetData SOURCES Assets/phoenix.png ${EMBERLINE_AUDITION_SAMPLES})
 
 # The sequencer engine, scale / rate maths, humanization and MIDI export. Depends on juce_audio_basics only, so the
 # command-line tests (and CI on Linux) can build it without any GUI libraries.
@@ -60,6 +62,7 @@ add_library(EmberlinePolyCore STATIC
     Source/Preset.h
     Source/Randomise.h
     Source/Humanize.h
+    Source/Pattern.h
     Source/Rates.h
     Source/Scales.h
     Source/Settings.h
@@ -81,8 +84,14 @@ target_sources(EmberlinePoly PRIVATE
     Source/PluginProcessor.h
     Source/PluginEditor.cpp
     Source/PluginEditor.h
+    Source/PatternEditor.cpp
+    Source/PatternEditor.h
+    Source/ChordStrip.cpp
+    Source/ChordStrip.h
     Source/Parameters.cpp
     Source/Parameters.h
+    Source/Audition.cpp
+    Source/Audition.h
     Source/EmberLookAndFeel.cpp
     Source/EmberLookAndFeel.h
     Source/EditorWidgets.h
@@ -132,7 +141,10 @@ target_sources(EmberlinePolyTool PRIVATE
     tools/PolyTool.cpp
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
+    Source/PatternEditor.cpp
+    Source/ChordStrip.cpp
     Source/Parameters.cpp
+    Source/Audition.cpp
     Source/EmberLookAndFeel.cpp
 )
 target_compile_definitions(EmberlinePolyTool PRIVATE

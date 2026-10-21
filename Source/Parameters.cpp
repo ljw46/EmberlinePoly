@@ -26,7 +26,8 @@ namespace ember::params
         int defaultStep (int engine, int kind, int step)
         {
             const auto& m = motif (engine);
-            const std::vector<int>* tables[] { &m.pitch, &m.velocity, &m.gate, &m.probability, &m.ratchet };
+            static const std::vector<int> zero { 0 };
+            const std::vector<int>* tables[] { &m.pitch, &m.velocity, &m.gate, &m.probability, &m.ratchet, &zero, &zero };
             const auto& v = *tables[kind];
             return v[(size_t) step % v.size()];
         }
@@ -74,11 +75,17 @@ namespace ember::params
             layout.add (std::make_unique<Choice> (ParameterID { engineId (e, "arp"), version }, prefix + "Arp Mode", arpNames, d.arp));
             layout.add (std::make_unique<Choice> (ParameterID { engineId (e, "channel"), version }, prefix + "MIDI Channel", rates::ratioNames(), d.channelIndex));
 
+            layout.add (std::make_unique<Int> (ParameterID { engineId (e, "pmask"), version }, prefix + "Pitch Applies To", 0, 255, 255));
+
             for (int k = 0; k < seq::numKinds; ++k)
+            {
+                layout.add (std::make_unique<Int> (ParameterID { laneLengthId (e, k), version }, prefix + stepInfo[k].name + " Length (0 = engine steps)", 0, seq::maxSteps, 0));
+                layout.add (std::make_unique<Int> (ParameterID { laneDivideId (e, k), version }, prefix + stepInfo[k].name + " Clock Divide", 1, maxLaneDivide, 1));
                 for (int i = 0; i < seq::maxSteps; ++i)
                     layout.add (std::make_unique<Int> (ParameterID { stepId (e, k, i), version },
                                                        prefix + stepInfo[k].name + " Step " + juce::String (i + 1),
                                                        stepInfo[k].min, stepInfo[k].max, defaultStep (e, k, i)));
+            }
         }
 
         layout.add (std::make_unique<Choice> (ParameterID { "chord_source", version }, "Chord Source", chords::sourceNames(), 0));
@@ -97,6 +104,8 @@ namespace ember::params
         layout.add (std::make_unique<Choice> (ParameterID { "root", version }, "Root", scales::rootNames(), 0));
         layout.add (std::make_unique<Choice> (ParameterID { "scale", version }, "Scale", scales::names(), 1));
         layout.add (std::make_unique<Bool> (ParameterID { "scale_lock", version }, "Scale Lock", true));
+        for (int pc = 0; pc < 12; ++pc)
+            layout.add (std::make_unique<Choice> (ParameterID { ruleId (pc), version }, "Note Rule " + scales::rootNames()[pc], noteRuleNames, 0));
         layout.add (std::make_unique<Choice> (ParameterID { "borrow_scale", version }, "Borrow Scale", scales::names(), 2));
         layout.add (std::make_unique<Float> (ParameterID { "borrow_amount", version }, "Borrow Amount",
                                              juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("%")));
@@ -111,6 +120,14 @@ namespace ember::params
                                              juce::NormalisableRange<float> (0.0f, 25.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("ms")));
         layout.add (std::make_unique<Float> (ParameterID { "slip", version }, "Gate Slip",
                                              juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        layout.add (std::make_unique<Bool> (ParameterID { "audition_on", version }, "Audition", false));
+        layout.add (std::make_unique<Float> (ParameterID { "audition_level", version }, "Audition Level",
+                                             juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 70.0f, juce::AudioParameterFloatAttributes().withLabel ("%")));
+        layout.add (std::make_unique<Choice> (ParameterID { "sound_chords", version }, "Chords Sound", audition::soundNames(), seq::AuditionSettings().chordsSound));
+        for (int e = 0; e < seq::numEngines; ++e)
+            layout.add (std::make_unique<Choice> (ParameterID { engineId (e, "sound"), version }, "Engine " + juce::String (e + 1) + " Sound", audition::soundNames(),
+                                                  seq::AuditionSettings().engineSound[(size_t) e]));
 
         layout.add (std::make_unique<Bool> (ParameterID { "run", version }, "Run (no host)", true));
         layout.add (std::make_unique<Float> (ParameterID { "bpm", version }, "Tempo (no host)",
@@ -135,20 +152,29 @@ namespace ember::params
             en.num = get (engineId (e, "num"));       en.den = get (engineId (e, "den"));
             en.octave = get (engineId (e, "octave")); en.mute = get (engineId (e, "mute"));
             en.solo = get (engineId (e, "solo"));     en.arp = get (engineId (e, "arp"));
-            en.channel = get (engineId (e, "channel"));
+            en.channel = get (engineId (e, "channel"));  en.pitchMask = get (engineId (e, "pmask"));
             for (int k = 0; k < seq::numKinds; ++k)
+            {
+                en.laneLength[(size_t) k] = get (laneLengthId (e, k));
+                en.laneDivide[(size_t) k] = get (laneDivideId (e, k));
                 for (int i = 0; i < seq::maxSteps; ++i)
                     en.step[(size_t) k][(size_t) i] = get (stepId (e, k, i));
+            }
         }
 
         for (int c = 0; c < seq::maxChordSlots; ++c)
             slot[(size_t) c] = { get (chordId (c, "deg")), get (chordId (c, "ext")) };
+        for (int pc = 0; pc < 12; ++pc)
+            rule[(size_t) pc] = get (ruleId (pc));
 
         chordSource = get ("chord_source");  chordLength = get ("chord_length");  chordBars = get ("chord_bars");
         chordTiming = get ("chord_timing");  chordOut = get ("chord_out");        chordChannel = get ("chord_channel");
         root = get ("root");  baseOctave = get ("base_octave");  scale = get ("scale");  borrowScale = get ("borrow_scale");
         scaleLock = get ("scale_lock");  borrowAmount = get ("borrow_amount");  jitter = get ("jitter");  slip = get ("slip");
         run = get ("run");  bpm = get ("bpm");
+        auditionOn = get ("audition_on");  auditionLevel = get ("audition_level");  chordsSound = get ("sound_chords");
+        for (int e = 0; e < seq::numEngines; ++e)
+            engineSound[(size_t) e] = get (engineId (e, "sound"));
     }
 
     void Reader::read (seq::Settings& s) const noexcept
@@ -165,13 +191,20 @@ namespace ember::params
             out.octave = i (in.octave) - 2;
             out.mute = f (in.mute) >= 0.5f;   out.solo = f (in.solo) >= 0.5f;
             out.arp = i (in.arp);        out.channel = i (in.channel) + 1;
+            out.pitchMask = i (in.pitchMask);
             for (size_t k = 0; k < (size_t) seq::numKinds; ++k)
+            {
+                out.laneLength[k] = i (in.laneLength[k]);
+                out.laneDivide[k] = i (in.laneDivide[k]);
                 for (size_t n = 0; n < (size_t) seq::maxSteps; ++n)
                     out.step[k][n] = i (in.step[k][n]);
+            }
         }
 
         for (size_t c = 0; c < (size_t) seq::maxChordSlots; ++c)
             s.chords.slot[c] = { i (slot[c].degree), i (slot[c].extension) };
+        for (size_t pc = 0; pc < 12; ++pc)
+            s.noteRule[pc] = i (rule[pc]);
 
         s.chords.source = i (chordSource);   s.chords.length = i (chordLength) + 1;   s.chords.barsIndex = i (chordBars);
         s.chords.timing = i (chordTiming);   s.chords.out = f (chordOut) >= 0.5f;     s.chords.channel = i (chordChannel) + 1;
@@ -180,6 +213,9 @@ namespace ember::params
         s.scaleLock = f (scaleLock) >= 0.5f;   s.borrowAmount = f (borrowAmount);
         s.jitterMs = f (jitter);   s.slipPercent = f (slip);
         s.run = f (run) >= 0.5f;   s.internalBpm = (double) f (bpm);
+        s.audition.on = f (auditionOn) >= 0.5f;   s.audition.level = f (auditionLevel) * 0.01f;   s.audition.chordsSound = i (chordsSound);
+        for (size_t e = 0; e < (size_t) seq::numEngines; ++e)
+            s.audition.engineSound[e] = i (engineSound[e]);
     }
 }
 
@@ -214,9 +250,14 @@ namespace ember::params
         setPlain (apvts, engineId (e, "rate"), (float) en.rate);
         setPlain (apvts, engineId (e, "num"), (float) en.num - 1.0f);
         setPlain (apvts, engineId (e, "den"), (float) en.den - 1.0f);
+        setPlain (apvts, engineId (e, "pmask"), (float) en.pitchMask);
         for (int k = 0; k < seq::numKinds; ++k)
+        {
+            setPlain (apvts, laneLengthId (e, k), (float) en.laneLength[(size_t) k]);
+            setPlain (apvts, laneDivideId (e, k), (float) en.divideOf (k));
             for (int i = 0; i < seq::maxSteps; ++i)
                 setPlain (apvts, stepId (e, k, i), (float) en.step[(size_t) k][(size_t) i]);
+        }
     }
 
     void applyPreset (juce::AudioProcessorValueTreeState& apvts, const presets::Preset& p, bool includeChords)
@@ -234,6 +275,8 @@ namespace ember::params
             setPlain (apvts, engineId (e, "arp"), (float) en.arp);
         }
 
+        for (int pc = 0; pc < 12; ++pc)
+            setPlain (apvts, ruleId (pc), (float) s.noteRule[(size_t) pc]);
         setPlain (apvts, "root", (float) s.root);
         setPlain (apvts, "scale", (float) s.scale);
         setPlain (apvts, "scale_lock", s.scaleLock ? 1.0f : 0.0f);
@@ -256,5 +299,67 @@ namespace ember::params
                 setPlain (apvts, chordId (c, "ext"), (float) s.chords.slot[(size_t) c].extension);
             }
         }
+    }
+}
+
+namespace ember::params
+{
+    seq::EngineSettings PatternBank::live (int engine) const
+    {
+        return capturePreset (apvts, false).settings.engine[(size_t) engine];
+    }
+
+    int PatternBank::active (int engine) const
+    {
+        return juce::jlimit (0, patterns::numSlots - 1, (int) apvts.state.getProperty (activeKey (engine), 0));
+    }
+
+    bool PatternBank::filled (int engine, int slot) const
+    {
+        return slot == active (engine) || apvts.state.hasProperty (slotKey (engine, slot));
+    }
+
+    seq::EngineSettings PatternBank::read (int engine, int slot) const
+    {
+        if (slot == active (engine) || ! apvts.state.hasProperty (slotKey (engine, slot)))
+            return live (engine);
+        auto e = live (engine);
+        patterns::decode (apvts.state.getProperty (slotKey (engine, slot)).toString(), e);
+        return e;
+    }
+
+    void PatternBank::select (int engine, int slot)
+    {
+        slot = juce::jlimit (0, patterns::numSlots - 1, slot);
+        const int current = active (engine);
+        if (slot == current)
+            return;
+
+        apvts.state.setProperty (slotKey (engine, current), patterns::encode (live (engine)), nullptr);
+        apvts.state.setProperty (activeKey (engine), slot, nullptr);
+
+        if (apvts.state.hasProperty (slotKey (engine, slot)))
+        {
+            auto e = live (engine);
+            if (patterns::decode (apvts.state.getProperty (slotKey (engine, slot)).toString(), e))
+                applyPattern (apvts, engine, e);
+        }
+    }
+
+    void PatternBank::copy (int engine, int from, int to)
+    {
+        if (from == to)
+            return;
+        const auto source = read (engine, from);
+        if (to == active (engine))
+            applyPattern (apvts, engine, source);
+        else
+            apvts.state.setProperty (slotKey (engine, to), patterns::encode (source), nullptr);
+    }
+
+    void PatternBank::clear (int engine, int slot)
+    {
+        if (slot != active (engine))
+            apvts.state.removeProperty (slotKey (engine, slot), nullptr);
     }
 }

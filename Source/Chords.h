@@ -182,4 +182,63 @@ namespace ember::chords
         }
         return s;
     }
+
+    // How a chord reads on a chord strip: "Am7", "Fmaj7", "Csus4", "Gdim". The intervals come from the voicing itself, so it is right for every scale.
+    struct ChordLabel
+    {
+        juce::String name;      // "Am7"
+        juce::String numeral;   // "i7", "VI": lower case when the chord is minor or diminished
+        bool minor = false;
+    };
+
+    inline ChordLabel label (int scaleIndex, int root, int degree, int extension)
+    {
+        const auto v = voice (scaleIndex, degree, extension);
+        auto interval = [&] (int i) { return i < v.count ? ((v.semis[(size_t) i] - v.semis[0]) % 12 + 12) % 12 : -1; };
+        const int third = interval (1), fifth = interval (2), seventh = extension == ext7th || extension == ext9th ? interval (3) : -1;
+
+        // spell the chord root the way the key signature would: flats in flat keys (C minor is three flats, so its VI is Ab, not G#)
+        static constexpr int relativeMajor[] { 0, 3, 10, 8, 7, 5, 3, 3 };   // semitones above the root to the key's relative major, per scales::table
+        const int tonic = (root + relativeMajor[juce::jlimit (0, scales::count - 1, scaleIndex)]) % 12;
+        const bool flats = tonic == 1 || tonic == 3 || tonic == 5 || tonic == 6 || tonic == 8 || tonic == 10;
+        static const juce::StringArray flatNames { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+
+        const int pc = ((root + scales::degreeToSemitones (scaleIndex, degree)) % 12 + 12) % 12;
+        ChordLabel out;
+        out.name = flats ? flatNames[pc] : scales::rootNames()[pc];
+
+        juce::String suffix, mark;   // `mark` is the numeral's ending: "°", "7", "M7", "9", "sus4"
+        const bool suspended = extension == extSus2 || extension == extSus4 || extension == ext7sus4;
+        if (suspended)
+            suffix = mark = extension == extSus2 ? "sus2" : extension == extSus4 ? "sus4" : "7sus4";
+        else
+        {
+            const bool diminished = third == 3 && fifth == 6;
+            out.minor = third == 3;
+            const bool hasNinth = extension == ext9th;
+            if (diminished)
+            {
+                suffix = seventh == 9 ? "dim7" : "dim";
+                mark = juce::String::charToString ((juce::juce_wchar) 0x00b0) + (seventh == 9 ? "7" : "");
+            }
+            else
+            {
+                if (third == 3)
+                    suffix = "m";
+                if (fifth == 8)
+                    suffix += "aug", mark += "+";
+                if (hasNinth)
+                    suffix += seventh == 11 ? "maj9" : "9", mark += seventh == 11 ? "M9" : "9";
+                else if (seventh == 11)
+                    suffix += "maj7", mark += "M7";
+                else if (seventh == 10 || seventh == 9)
+                    suffix += "7", mark += "7";
+            }
+        }
+        out.name += suffix;
+
+        auto numeral = degreeNames()[juce::jlimit (0, 6, degree)];
+        out.numeral = (out.minor ? numeral.toLowerCase() : numeral) + mark;
+        return out;
+    }
 }

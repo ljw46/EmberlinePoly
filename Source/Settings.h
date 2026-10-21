@@ -13,7 +13,8 @@ namespace ember::seq
     inline constexpr int maxBufferNotes = 16;
 
     // Per-step values of a motif engine.
-    enum StepKind { kindPitch, kindVelocity, kindGate, kindProbability, kindRatchet, numKinds };
+    // Late is a timing offset in % of the step (negative is early); Harmony adds a second note that many semitones from the first (0 is off).
+    enum StepKind { kindPitch, kindVelocity, kindGate, kindProbability, kindRatchet, kindLate, kindHarmony, numKinds };
 
     // How an engine picks from the chord / held-note buffer on each trigger.
     enum ArpMode { arpCyclic, arpChordHold, arpLowHigh, arpRandom, arpRoot, numArpModes };
@@ -33,7 +34,18 @@ namespace ember::seq
         int arp = arpCyclic;
         int channel = 2;           // MIDI output channel 1-16
         bool mute = false, solo = false;
-        std::array<std::array<int, maxSteps>, numKinds> step {};   // pitch, velocity, gate %, probability %, ratchet count
+        std::array<std::array<int, maxSteps>, numKinds> step {};   // pitch, velocity, gate %, probability %, ratchet count, late %, harmony semitones
+
+        // Every lane can run its own length and clock divide (a 3-step velocity lane against a 5-step pitch lane). Length 0 follows `steps`;
+        // a divide of n makes the lane advance once every n steps of the engine's clock. Values below 1 count as 1.
+        std::array<int, numKinds> laneLength {};
+        std::array<int, numKinds> laneDivide {};
+
+        // Which chord-buffer positions (bit 0 is the lowest note) receive the pitch lane's shift. The rest keep their own pitch.
+        int pitchMask = 0xff;
+
+        int lengthOf (int kind) const noexcept { return laneLength[(size_t) kind] > 0 ? laneLength[(size_t) kind] : steps; }
+        int divideOf (int kind) const noexcept { return laneDivide[(size_t) kind] > 1 ? laneDivide[(size_t) kind] : 1; }
     };
 
     struct ChordSlot { int degree = 0; int extension = 0; };   // scale degree 0-6, index into chords::extensionNames()
@@ -49,10 +61,23 @@ namespace ember::seq
         int channel = 1;
     };
 
+    // The built-in audition sampler: a sound per part (0 is off; the numbers index audition::soundNames()) and a level.
+    struct AuditionSettings
+    {
+        bool on = false;
+        float level = 0.7f;
+        int chordsSound = 4;
+        std::array<int, numEngines> engineSound { 2, 1, 3, 5 };   // bass, pluck, pad, bell
+    };
+
     struct Settings
     {
         std::array<EngineSettings, numEngines> engine {};
+        AuditionSettings audition;
         ChordSettings chords;
+
+        // Per pitch class (C = 0), what happens to a generated note: 0 plays it, 1 blocks it, 2 plays a semitone higher, 3 a semitone lower.
+        std::array<int, 12> noteRule {};
 
         int root = 0;              // 0-11
         int baseOctave = 3;        // MIDI note 60 is C3

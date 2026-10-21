@@ -18,9 +18,13 @@
 //     "chord_source": "Internal",
 //     "chords": { "length": 4, "each_lasts": "1 bar", "changes": "On beat", "output": true, "progression": [ { "degree": "I", "colour": "7th" }, ... ] },
 //     "engines": [ { "engine": 1, "steps": 8, "rate": "1/8", "ratio": "1:1", "octave": -2, "note_pick": "Root",
-//                    "pitch": [...], "velocity": [...], "gate": [...], "probability": [...], "ratchet": [...] }, ... ] }
+//                    "pitch": [...], "velocity": [...], "gate": [...], "probability": [...], "ratchet": [...], "late": [...], "harmony": [...],
+//                    "lane_length": { "pitch": 5 }, "lane_divide": { "gate": 2 }, "pitch_applies_to": [1, 2] }, ... ],
+//     "note_rules": { "C#": "Block", "F": "Up" } }
 //
-// Each lane lists its first `steps` values and repeats to fill the 32 slots.
+// Each lane lists its first values (as many as its length: `steps`, or its own "lane_length") and repeats to fill the 32 slots. Late (% of a
+// step, negative is early) and harmony (semitones, 0 is off) are left out when they are all zero, and so are lane lengths and divides at their
+// defaults, "pitch_applies_to" (the chord notes, 1 is the lowest, that receive the pitch shift) when it is all of them, and "note_rules" when empty.
 namespace ember::presets
 {
     inline constexpr const char* formatTag = "emberline-poly-preset";
@@ -75,7 +79,7 @@ namespace ember::presets
         inline juce::var lane (const seq::EngineSettings& e, int kind)
         {
             juce::Array<juce::var> a;
-            for (int i = 0; i < e.steps; ++i)
+            for (int i = 0; i < e.lengthOf (kind); ++i)
                 a.add (e.step[(size_t) kind][(size_t) i]);
             return a;
         }
@@ -83,9 +87,19 @@ namespace ember::presets
         struct LaneInfo { const char* key; int min, max, fallback; };
         inline constexpr LaneInfo lanes[seq::numKinds] {
             { "pitch", -24, 24, 0 }, { "velocity", 0, 127, 100 }, { "gate", 10, 200, 60 }, { "probability", 0, 100, 100 }, { "ratchet", 1, 4, 1 },
+            { "late", -50, 50, 0 }, { "harmony", -12, 12, 0 },
         };
 
-        inline void readLane (const juce::var& v, seq::EngineSettings& e, int kind)
+        inline bool laneIsDefault (const seq::EngineSettings& e, int kind)   // late and harmony lanes that do nothing are left out
+        {
+            for (int i = 0; i < e.lengthOf (kind); ++i)
+                if (e.step[(size_t) kind][(size_t) i] != lanes[kind].fallback)
+                    return false;
+            return true;
+        }
+
+        // `length` is the lane's own length, so the values repeat over the 32 slots the way the engine reads them.
+        inline void readLane (const juce::var& v, seq::EngineSettings& e, int kind, int length)
         {
             const auto& info = lanes[kind];
             std::vector<int> values;
@@ -95,7 +109,7 @@ namespace ember::presets
             if (values.empty())
                 values.push_back (info.fallback);
             for (int i = 0; i < seq::maxSteps; ++i)
-                e.step[(size_t) kind][(size_t) i] = values[(size_t) i % values.size()];
+                e.step[(size_t) kind][(size_t) i] = values[(size_t) (i % juce::jmax (1, length)) % values.size()];
         }
     }
 
@@ -146,6 +160,19 @@ namespace ember::presets
             root->setProperty ("chords", juce::var (c));
         }
 
+        {
+            auto* rules = new juce::DynamicObject();
+            bool any = false;
+            static const char* ruleNames[] { "Allow", "Block", "Up", "Down" };
+            for (int pc = 0; pc < 12; ++pc)
+                if (s.noteRule[(size_t) pc] != 0)
+                    rules->setProperty (scales::rootNames()[pc], ruleNames[juce::jlimit (0, 3, s.noteRule[(size_t) pc])]), any = true;
+            if (any)
+                root->setProperty ("note_rules", juce::var (rules));
+            else
+                delete rules;
+        }
+
         juce::Array<juce::var> engines;
         for (int n = 0; n < seq::numEngines; ++n)
         {
@@ -160,7 +187,35 @@ namespace ember::presets
             o->setProperty ("octave", e.octave);
             o->setProperty ("note_pick", arpNames()[e.arp]);
             for (int k = 0; k < seq::numKinds; ++k)
-                o->setProperty (lanes[k].key, lane (e, k));
+                if (k < seq::kindLate || ! laneIsDefault (e, k))
+                    o->setProperty (lanes[k].key, lane (e, k));
+
+            auto* lengths = new juce::DynamicObject();
+            auto* divides = new juce::DynamicObject();
+            bool anyLength = false, anyDivide = false;
+            for (int k = 0; k < seq::numKinds; ++k)
+            {
+                if (e.laneLength[(size_t) k] > 0 && e.laneLength[(size_t) k] != e.steps)
+                    lengths->setProperty (lanes[k].key, e.laneLength[(size_t) k]), anyLength = true;
+                if (e.divideOf (k) > 1)
+                    divides->setProperty (lanes[k].key, e.divideOf (k)), anyDivide = true;
+            }
+            if (anyLength)
+                o->setProperty ("lane_length", juce::var (lengths));
+            else
+                delete lengths;
+            if (anyDivide)
+                o->setProperty ("lane_divide", juce::var (divides));
+            else
+                delete divides;
+            if ((e.pitchMask & 0xff) != 0xff)
+            {
+                juce::Array<juce::var> positions;
+                for (int b = 0; b < 8; ++b)
+                    if (((e.pitchMask >> b) & 1) != 0)
+                        positions.add (b + 1);
+                o->setProperty ("pitch_applies_to", positions);
+            }
             engines.add (juce::var (o));
         }
         root->setProperty ("engines", engines);
@@ -244,6 +299,13 @@ namespace ember::presets
                 s.chords.length = intOf (c.getProperty ("length", {}), s.chords.length, 1, seq::maxChordSlots);
         }
 
+        if (auto* rules = v.getProperty ("note_rules", {}).getDynamicObject())
+        {
+            static const juce::StringArray ruleNames { "Allow", "Block", "Up", "Down" };
+            for (int pc = 0; pc < 12; ++pc)
+                s.noteRule[(size_t) pc] = indexOfName (ruleNames, rules->getProperty (scales::rootNames()[pc]), 0);
+        }
+
         int listed = 0;
         if (auto* engines = v.getProperty ("engines", {}).getArray())
         {
@@ -260,8 +322,23 @@ namespace ember::presets
                 e.den = ratio.size() == 2 ? juce::jlimit (1, rates::maxRatio, ratio[1].getIntValue()) : 1;
                 e.octave = intOf (o.getProperty ("octave", {}), e.octave, -2, 2);
                 e.arp = indexOfName (arpNames(), o.getProperty ("note_pick", {}), e.arp);
+                e.laneLength.fill (0);
+                e.laneDivide.fill (1);
+                const auto lengths = o.getProperty ("lane_length", {}), divides = o.getProperty ("lane_divide", {});
                 for (int k = 0; k < seq::numKinds; ++k)
-                    readLane (o.getProperty (lanes[k].key, {}), e, k);
+                {
+                    e.laneLength[(size_t) k] = intOf (lengths.getProperty (lanes[k].key, {}), 0, 0, seq::maxSteps);
+                    e.laneDivide[(size_t) k] = intOf (divides.getProperty (lanes[k].key, {}), 1, 1, 8);
+                    readLane (o.getProperty (lanes[k].key, {}), e, k, e.lengthOf (k));
+                }
+
+                e.pitchMask = 0xff;
+                if (auto* positions = o.getProperty ("pitch_applies_to", {}).getArray())
+                {
+                    e.pitchMask = 0;
+                    for (auto& pos : *positions)
+                        e.pitchMask |= 1 << (intOf (pos, 1, 1, 8) - 1);
+                }
                 e.mute = e.solo = false;
                 p.used[(size_t) slot] = true;
                 ++listed;

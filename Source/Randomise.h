@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <vector>
 
-// Dice for one motif engine. It only draws the pattern (step count, rate, ratio and the five step lanes); the part's
+// Dice for one motif engine. It only draws the pattern (step count, rate, ratio and the five main step lanes, and resets lane lengths, divides, late and harmony); the part's
 // voicing and routing (octave, note pick, MIDI channel, mute, solo) stay as the player set them. The draws are shaped per
 // role so a roll is usable rather than noise: the first step always sounds, rests and probability dips are limited, the
 // bass never ratchets past two, and step counts avoid values that line up with the other engines.
@@ -97,6 +97,12 @@ namespace ember::dice
             e.step[seq::kindProbability][(size_t) i] = prob[s];
             e.step[seq::kindRatchet][(size_t) i] = ratch[s];
         }
+
+        // a roll starts the lanes over together: linked lengths, no divides, no late or harmony
+        e.laneLength.fill (0);
+        e.laneDivide.fill (1);
+        e.step[seq::kindLate].fill (0);
+        e.step[seq::kindHarmony].fill (0);
     }
 
     // Rolls the engines in `which` (bit per engine). Step counts are chosen to differ from the engines left alone and from each other.

@@ -33,12 +33,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
-      - name: Build EmberlinePolyTests
+      - name: Build EmberlinePolyTests and EmberlinePolyTool
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target EmberlinePolyTests
+          cmake --build build --target EmberlinePolyTests EmberlinePolyTool
       - name: Engine tests
         run: build/EmberlinePolyTests_artefacts/Release/EmberlinePolyTests
+      # Pattern slots, preset apply, saved state and the pattern editor's mouse editing, against a real processor (no display needed).
+      - name: Plugin self-test
+        run: build/EmberlinePolyTool_artefacts/Release/EmberlinePolyTool selftest x
 
   windows:
     runs-on: windows-latest

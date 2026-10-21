@@ -19,4 +19,12 @@ Versions follow `MAJOR.MINOR.PATCH`. The number lives in one place: `project(...
   the progression is optional. Routing is never part of a preset.
 * With a host timeline the tempo box shows the host tempo and the no-host controls are disabled. The chord source selector moved to the scale panel, and Live MIDI greys out the
   progression, chord timing / output and the CHORDS export handle.
+* A new editor, scalable by dragging the corner: a slim row per engine with live playheads, one large pattern view for the selected engine, a chord strip of named chords
+  ("Am7"), a slim top bar with a preset browser, and a Settings drawer.
+* Seven lanes per engine: pitch (piano roll), velocity, gate, probability, ratchet, **late** (per-step timing) and **harmony** (a second note).
+* **Per-lane length and clock divide**: every lane can run its own length, advancing once every n steps, so lanes drift against each other inside one engine.
+* **Pitch moves notes**: choose which chord notes the pitch lane shifts. **Note rules**: block, nudge up or nudge down any pitch class.
+* **Pattern slots A to D** per engine, saved with the project.
+* **AUDITION**: a built-in sampler (Pluck, Bass, Pad, Keys, Bell) so patterns can be heard without another instrument. Off by default.
+* More factory presets (a Lanes category), and presets store lane lengths, divides, late, harmony, pitch mask and note rules.
 * VST3, Audio Unit (macOS) and Standalone builds for Windows and macOS, with an internal clock when there is no host transport.

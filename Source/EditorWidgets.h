@@ -163,171 +163,143 @@ namespace ember::ui
         juce::AudioProcessorValueTreeState::ButtonAttachment attachment;
     };
 
-    // One motif engine's steps as a row of pads. Each pad shows the step's velocity as its height, its gate as its width,
-    // its probability as its brightness, its ratchet count as dots and its pitch shift as a number. Only the engine's
-    // active steps are drawn, stretched across the width, so engines of different lengths look as different as they sound.
-    // Dragging on the pads edits whichever value the edit mode selects.
-    class MotifGrid final : public juce::Component
+    // One octave of piano keys that decide what happens to a generated note of that pitch class: play it, block it, or nudge it a semitone
+    // up or down (the arp's note prevention). Click cycles the rule, right-click clears it. Bound to the twelve rule_NN parameters.
+    class NoteRules final : public juce::Component, public juce::SettableTooltipClient
     {
     public:
-        enum Mode { editVelocity, editGate, editPitch, editProbability, editRatchet, numModes };
-
-        MotifGrid (juce::AudioProcessorValueTreeState& apvts, int engineIndex, juce::Colour accent)
-            : colour (accent), stepsValue (apvts.getRawParameterValue (params::engineId (engineIndex, "steps")))
+        explicit NoteRules (juce::AudioProcessorValueTreeState& a) : apvts (a)
         {
-            for (int k = 0; k < seq::numKinds; ++k)
-                for (int i = 0; i < seq::maxSteps; ++i)
-                    values[(size_t) k][(size_t) i] = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (params::stepId (engineIndex, k, i)));
+            for (int pc = 0; pc < 12; ++pc)
+                value[(size_t) pc] = a.getRawParameterValue (params::ruleId (pc));
+            setTooltip ("Click a key to cycle: play, block, up a semitone, down a semitone. Right-click clears it.");
         }
-
-        void setMode (int m) { mode = juce::jlimit (0, numModes - 1, m); repaint(); }
-
-        void setPlayhead (int step)
-        {
-            if (step != playhead)
-            {
-                playhead = step;
-                repaint();
-            }
-        }
-
-        int numSteps() const noexcept { return juce::jlimit (1, seq::maxSteps, (int) std::lround (stepsValue->load())); }
 
         void paint (juce::Graphics& g) override
         {
-            const auto b = getLocalBounds().toFloat();
-            g.setColour (colours::panelFill);
-            g.fillRoundedRectangle (b, 6.0f);
-            g.setColour (colour.withAlpha (0.28f));
-            g.drawRoundedRectangle (b.reduced (0.5f), 6.0f, 1.0f);
-
-            const int n = numSteps();
-            const float cell = b.getWidth() / (float) n;
-            const float top = b.getY() + textRow, bottom = b.getBottom() - dotRow - 2.0f;
-            const float span = bottom - top;
-
-            for (int i = 0; i < n; ++i)
-            {
-                const auto column = juce::Rectangle<float> (b.getX() + (float) i * cell, b.getY(), cell, b.getHeight());
-                const bool now = i == playhead;
-                if (now)
-                {
-                    g.setColour (colour.withAlpha (0.14f));
-                    g.fillRect (column);
-                }
-                else if (i % 4 == 0)
-                {
-                    g.setColour (juce::Colours::white.withAlpha (0.025f));
-                    g.fillRect (column);
-                }
-
-                const int velocity = valueAt (seq::kindVelocity, i), gate = valueAt (seq::kindGate, i);
-                const int probability = valueAt (seq::kindProbability, i), ratchet = valueAt (seq::kindRatchet, i), pitch = valueAt (seq::kindPitch, i);
-
-                // velocity = height, gate = width, probability = brightness
-                const float h = (float) velocity / 127.0f * span;
-                const float w = juce::jmax (3.0f, (cell - 4.0f) * (float) gate / 200.0f);
-                const juce::Rectangle<float> bar (column.getCentreX() - w * 0.5f, bottom - h, w, juce::jmax (2.0f, h));
-                const float alpha = (0.3f + 0.65f * (float) probability / 100.0f) * (now ? 1.0f : 0.72f);
-                g.setColour (colour.withAlpha (alpha));
-                g.fillRoundedRectangle (bar, 2.0f);
-                if (now)
-                {
-                    g.setColour (colour.withAlpha (0.25f));
-                    g.drawRoundedRectangle (bar.expanded (1.5f), 3.0f, 2.0f);
-                }
-
-                // ratchet count as dots along the bottom
-                for (int r = 0; r < ratchet; ++r)
-                {
-                    const float spacing = juce::jmin (6.0f, (cell - 6.0f) / 4.0f);
-                    const float x = column.getCentreX() + ((float) r - (float) (ratchet - 1) * 0.5f) * spacing;
-                    g.setColour (mode == editRatchet ? juce::Colours::white.withAlpha (0.9f) : colour.withAlpha (0.8f));
-                    g.fillEllipse (x - 2.0f, b.getBottom() - dotRow + 1.0f, 4.0f, 4.0f);
-                }
-
-                // pitch shift overlay
-                if (cell >= 22.0f)
-                {
-                    g.setColour (juce::Colours::white.withAlpha (mode == editPitch ? 0.95f : now ? 0.8f : 0.5f));
-                    g.setFont (juce::FontOptions (mode == editPitch ? 11.5f : 10.5f, mode == editPitch ? juce::Font::bold : juce::Font::plain));
-                    g.drawText (pitch > 0 ? "+" + juce::String (pitch) : juce::String (pitch), column.withHeight (textRow), juce::Justification::centred);
-                }
-
-                // marker for the value being edited
-                if (mode == editGate || mode == editPitch || mode == editProbability)
-                {
-                    const float frac = mode == editGate ? (float) (gate - params::stepInfo[seq::kindGate].min) / 190.0f
-                                     : mode == editPitch ? (float) (pitch + 24) / 48.0f
-                                                         : (float) probability / 100.0f;
-                    g.setColour (juce::Colours::white.withAlpha (0.9f));
-                    g.fillRect (juce::Rectangle<float> (column.getX() + 2.0f, bottom - frac * span - 1.0f, cell - 4.0f, 2.0f));
-                }
-            }
+            static const bool black[12] { false, true, false, true, false, false, true, false, true, false, true, false };
+            static const int whiteIndex[12] { 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6 };   // a white key's own position, or the white key to the left of a black one
+            const float whiteW = (float) getWidth() / 7.0f;
+            for (int pass = 0; pass < 2; ++pass)
+                for (int pc = 0; pc < 12; ++pc)
+                    if (black[pc] == (pass == 1))
+                        paintKey (g, pc, keyBounds (pc, whiteW, black[pc], whiteIndex[pc]));
         }
 
-        void mouseDown (const juce::MouseEvent& e) override { edit (e); }
-        void mouseDrag (const juce::MouseEvent& e) override { edit (e); }
-
-        void mouseDoubleClick (const juce::MouseEvent& e) override
+        void mouseDown (const juce::MouseEvent& e) override
         {
-            if (auto* p = parameterAt (kindForMode(), e.x))
+            const int pc = keyAt (e.position);
+            if (pc < 0)
+                return;
+            const int rule = (int) std::lround (value[(size_t) pc]->load());
+            params::setPlain (apvts, params::ruleId (pc), e.mods.isPopupMenu() ? 0.0f : (float) ((rule + 1) % 4));
+            repaint();
+        }
+
+        void refresh()
+        {
+            std::uint32_t h = 17;
+            for (auto* v : value)
+                h = h * 31u + (std::uint32_t) std::lround (v->load());
+            if (h != lastHash)
             {
-                auto* ranged = static_cast<juce::RangedAudioParameter*> (p);   // getDefaultValue is private on AudioParameterInt
-                ranged->beginChangeGesture();
-                ranged->setValueNotifyingHost (ranged->getDefaultValue());
-                ranged->endChangeGesture();
+                lastHash = h;
+                repaint();
             }
         }
 
     private:
-        static constexpr float textRow = 14.0f, dotRow = 10.0f;
-
-        int kindForMode() const noexcept
+        juce::Rectangle<float> keyBounds (int, float whiteW, bool isBlack, int white) const
         {
-            switch (mode)
+            const float h = (float) getHeight();
+            if (isBlack)
+                return { ((float) white + 1.0f) * whiteW - whiteW * 0.3f, 0.0f, whiteW * 0.6f, h * 0.6f };
+            return { (float) white * whiteW + 1.0f, 0.0f, whiteW - 2.0f, h };
+        }
+
+        int keyAt (juce::Point<float> p) const
+        {
+            static const bool black[12] { false, true, false, true, false, false, true, false, true, false, true, false };
+            static const int whiteIndex[12] { 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6 };   // a white key's own position, or the white key to the left of a black one
+            const float whiteW = (float) getWidth() / 7.0f;
+            for (int pc = 0; pc < 12; ++pc)   // black keys sit on top, so test them first
+                if (black[pc] && keyBounds (pc, whiteW, true, whiteIndex[pc]).contains (p))
+                    return pc;
+            for (int pc = 0; pc < 12; ++pc)
+                if (! black[pc] && keyBounds (pc, whiteW, false, whiteIndex[pc]).contains (p))
+                    return pc;
+            return -1;
+        }
+
+        void paintKey (juce::Graphics& g, int pc, juce::Rectangle<float> r) const
+        {
+            static const bool black[12] { false, true, false, true, false, false, true, false, true, false, true, false };
+            const int rule = (int) std::lround (value[(size_t) pc]->load());
+            const bool isBlack = black[pc];
+            juce::Colour fill = rule == 1 ? colours::coral : rule == 0 ? (isBlack ? juce::Colour (0xff1b2433) : juce::Colour (0xffd8e0ec))
+                                                                      : colours::cyan.withMultipliedBrightness (isBlack ? 0.7f : 1.0f);
+            g.setColour (fill);
+            g.fillRoundedRectangle (r, 3.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.35f));
+            g.drawRoundedRectangle (r, 3.0f, 1.0f);
+            const char* mark[] { "", "x", "^", "v" };
+            if (rule > 0)
             {
-                case editGate:        return seq::kindGate;
-                case editPitch:       return seq::kindPitch;
-                case editProbability: return seq::kindProbability;
-                case editRatchet:     return seq::kindRatchet;
-                default:              return seq::kindVelocity;
+                g.setColour (juce::Colour (0xff070a10));
+                g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+                g.drawText (mark[rule], r.removeFromBottom (isBlack ? r.getHeight() : 22.0f), juce::Justification::centred);
             }
         }
 
-        int valueAt (int kind, int i) const { auto* p = values[(size_t) kind][(size_t) i]; return p != nullptr ? p->get() : 0; }
+        juce::AudioProcessorValueTreeState& apvts;
+        std::array<std::atomic<float>*, 12> value {};
+        std::uint32_t lastHash = 0;
+    };
 
-        juce::AudioParameterInt* parameterAt (int kind, int x) const
+    // Eight small switches, one per chord note (1 is the lowest), choosing which chord notes the pitch lane moves. Bound to an int bit mask.
+    class MaskToggles final : public juce::Component, public juce::SettableTooltipClient
+    {
+    public:
+        MaskToggles (juce::AudioProcessorValueTreeState& a, const juce::String& paramId)
+            : apvts (a), id (paramId), raw (a.getRawParameterValue (paramId)) {}
+
+        void setAccent (juce::Colour c) { accent = c; repaint(); }
+
+        void paint (juce::Graphics& g) override
         {
-            const int n = numSteps();
-            const int i = juce::jlimit (0, n - 1, (int) (((float) x / (float) juce::jmax (1, getWidth())) * (float) n));
-            return values[(size_t) kind][(size_t) i];
-        }
-
-        void edit (const juce::MouseEvent& e)
-        {
-            const int kind = kindForMode();
-            auto* p = parameterAt (kind, e.x);
-            if (p == nullptr)
-                return;
-
-            const auto& info = params::stepInfo[kind];
-            const float top = textRow, bottom = (float) getHeight() - dotRow - 2.0f;
-            const float up = 1.0f - juce::jlimit (0.0f, 1.0f, ((float) e.y - top) / juce::jmax (1.0f, bottom - top));
-            const int v = juce::jlimit (info.min, info.max, (int) std::lround ((double) info.min + (double) up * (info.max - info.min)));
-            if (p->get() != v)
+            drawCaption (g, getLocalBounds().removeFromTop (12), "PITCH MOVES NOTES");
+            const int mask = (int) std::lround (raw->load());
+            const float w = (float) getWidth() / 8.0f;
+            for (int b = 0; b < 8; ++b)
             {
-                p->beginChangeGesture();
-                *p = v;
-                p->endChangeGesture();
-                repaint();
+                const auto r = juce::Rectangle<float> ((float) b * w + 1.5f, 15.0f, w - 3.0f, (float) getHeight() - 17.0f);
+                const bool on = ((mask >> b) & 1) != 0;
+                g.setColour (on ? accent : juce::Colour (0xff0a0e15));
+                g.fillRoundedRectangle (r, 4.0f);
+                g.setColour (on ? accent : juce::Colour (0xff26324a));
+                g.drawRoundedRectangle (r, 4.0f, 1.0f);
+                g.setColour (on ? juce::Colour (0xff070a10) : juce::Colour (0xff8d9bb0));
+                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                g.drawText (juce::String (b + 1), r, juce::Justification::centred);
             }
         }
 
-        juce::Colour colour;
-        std::atomic<float>* stepsValue;
-        std::array<std::array<juce::AudioParameterInt*, seq::maxSteps>, seq::numKinds> values {};
-        int mode = editVelocity, playhead = -1;
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            const int b = juce::jlimit (0, 7, (int) ((float) e.x / ((float) getWidth() / 8.0f)));
+            const int mask = (int) std::lround (raw->load()) ^ (1 << b);
+            params::setPlain (apvts, id, (float) mask);
+            repaint();
+        }
+
+        void refresh() { const int m = (int) std::lround (raw->load()); if (m != last) { last = m; repaint(); } }
+
+    private:
+        juce::AudioProcessorValueTreeState& apvts;
+        juce::String id;
+        std::atomic<float>* raw;
+        juce::Colour accent = colours::cyan;
+        int last = -1;
     };
 
     // A button you can click to save the clip, or drag straight out of the plugin into a DAW track.

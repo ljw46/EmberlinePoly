@@ -23,6 +23,8 @@ USING IT
     - Reaper:   add a synth after it on the same track (FX chain), or route the track's MIDI to another track.
   Press play: the four engines follow the host's transport and tempo. Each part sends on its own MIDI channel:
   chords on 1, engines 1 to 4 on 2 to 5 (change them in the plugin). Set each instrument to listen to its channel.
+  Want to hear a pattern before routing it anywhere? Turn on AUDITION (bottom right): a small built-in sampler plays each part.
+  Turn it off again once the MIDI goes to a real instrument.
   To take a pattern with you, let it play a few bars, then drag CHORDS, an ENGINE or ALL TRACKS onto a MIDI track
   (or click the handle to save a .mid file).
 
